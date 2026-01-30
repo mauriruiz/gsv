@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { PersistedObject } from "./stored";
 
 const isWebSocketRequest = (request: Request) => 
   request.method === "GET" && request.headers.get('upgrade') === 'websocket';
@@ -65,6 +66,14 @@ type ConnectParams = {
   permissions?: string[];
   auth?: string;
   device?: string;
+  tools?: ToolDefinition[]; // mode == "node"
+  sessionKey?: string; // mode === "session"
+}
+
+type ToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
 }
 
 type HelloOkPayload = {
@@ -92,6 +101,33 @@ type HelloOkPayload = {
 type Frame = RequestFrame | ResponseFrame | EventFrame;
 
 export class Gateway extends DurableObject<Env> {
+  clients: Map<string, WebSocket> = new Map();
+  nodes: Map<string, WebSocket> = new Map();
+  sessions: Map<string, WebSocket> = new Map(); // TODO: think when session ws disconnect
+  toolRegistry = PersistedObject<Record<string, ToolDefinition[]>>(this.ctx.storage.kv, {
+    prefix: "toolRegistry:"
+  });
+
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env); 
+    
+    for (const ws of this.ctx.getWebSockets()) {
+      const { connected, mode, clientId, nodeId, sessionKey } = ws.deserializeAttachment();  
+      if (!connected) continue;
+
+      switch (mode) {
+        case "client":
+          this.clients.set(clientId, ws); break;
+        case "node": {
+          this.nodes.set(nodeId, ws);
+          break;
+        };
+        case "session":
+          this.sessions.set(sessionKey, ws); break;
+      }
+    }
+
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (isWebSocketRequest(request)) {
@@ -142,7 +178,7 @@ export class Gateway extends DurableObject<Env> {
 
         switch (frame.method) {
           case "connect": {
-            const { minProtocol } = (frame as RequestFrame<ConnectParams>).params ?? {}; 
+            const { minProtocol, client, tools, sessionKey } = (frame as RequestFrame<ConnectParams>).params ?? {}; 
             if (minProtocol != 1) {
               const res: ResponseFrame = {
                 type: "res",
@@ -155,10 +191,35 @@ export class Gateway extends DurableObject<Env> {
               }; 
               ws.send(JSON.stringify(res));
               return;
+            } else if (!client?.mode || !["node", "client", "session"].includes(client.mode)) {
+              const res: ResponseFrame = {
+                type: "res",
+                id: frame.id,
+                ok: false,
+                error: {
+                  code: 102, // TODO: don't pull this out of my ass
+                  message: "Invalid client mode."
+                }
+              }; 
+              ws.send(JSON.stringify(res));
+              return;
             }
 
-            const attachments = ws.deserializeAttachment();
-            ws.serializeAttachment({ ...attachments, connected: true});
+            let attachments = ws.deserializeAttachment();
+            attachments = { ...attachments, connected: true, mode: client.mode };
+            if (client.mode === "client") {
+              attachments.clientId = client.id;
+              this.clients.set(attachments.clientId, ws);
+            } else if (client.mode === "node") {
+              // TODO: support device id
+              attachments.nodeId = client.id;
+              this.nodes.set(attachments.nodeId, ws);
+              this.toolRegistry[attachments.nodeId] = tools ?? [];
+            } else {
+              attachments.sessionKey = sessionKey;
+              this.sessions.set(attachments.sessionKey, ws);
+            };
+            ws.serializeAttachment(attachments);
             const res: ResponseFrame<HelloOkPayload> = {
               type: "res",
               id: frame.id,
@@ -196,6 +257,16 @@ export class Gateway extends DurableObject<Env> {
         break;
       };
     };
+  }
+
+  webSocketClose(ws: WebSocket, code: number, reason: string) {
+    const { mode, clientId, nodeId, sessionKey } = ws.deserializeAttachment();
+    if (mode === "client") this.clients.delete(clientId);
+    else if (mode === "node") {
+      this.nodes.delete(nodeId);
+      delete this.toolRegistry[nodeId];
+    }
+    else if (mode === "session") this.sessions.delete(sessionKey);
   }
 
 }
