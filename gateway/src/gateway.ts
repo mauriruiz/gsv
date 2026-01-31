@@ -1017,10 +1017,14 @@ export class Gateway extends DurableObject<Env> {
       }
 
       // Process media attachments (transcribe audio if present)
+      // Priority: Workers AI (free) > OpenAI
       const config = this.getFullConfig();
       const processedMedia = await processMediaWithTranscription(
         params.message.media,
-        config.apiKeys.openai,
+        {
+          workersAi: this.env.AI,
+          openaiApiKey: config.apiKeys.openai,
+        },
       );
 
       const result = await sessionStub.chatSend(

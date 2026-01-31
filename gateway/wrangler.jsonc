@@ -38,7 +38,11 @@
 			"binding": "STORAGE",
 			"bucket_name": "gsv-storage"
 		}
-	]
+	],
+	// Workers AI for audio transcription (free)
+	"ai": {
+		"binding": "AI"
+	}
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
