@@ -208,18 +208,21 @@ async fn run_client(
 
     if let Some(msg) = message {
         // One-shot mode: send message and wait for response
-        send_chat(&conn, session_key, &msg).await?;
+        let was_command = send_chat(&conn, session_key, &msg).await?;
         
-        // Wait for response (up to 120 seconds for LLM + tool execution)
-        let timeout = tokio::time::Duration::from_secs(120);
-        let start = tokio::time::Instant::now();
-        
-        while !response_received.load(Ordering::SeqCst) {
-            if start.elapsed() > timeout {
-                eprintln!("Timeout waiting for response");
-                break;
+        // Only wait for chat event if this wasn't a command/directive
+        if !was_command {
+            // Wait for response (up to 120 seconds for LLM + tool execution)
+            let timeout = tokio::time::Duration::from_secs(120);
+            let start = tokio::time::Instant::now();
+            
+            while !response_received.load(Ordering::SeqCst) {
+                if start.elapsed() > timeout {
+                    eprintln!("Timeout waiting for response");
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
     } else {
         // Interactive mode
@@ -246,18 +249,21 @@ async fn run_client(
             // Reset response flag
             response_received.store(false, Ordering::SeqCst);
             
-            send_chat(&conn, session_key, line).await?;
+            let was_command = send_chat(&conn, session_key, line).await?;
             
-            // Wait for response (up to 120 seconds)
-            let timeout = tokio::time::Duration::from_secs(120);
-            let start = tokio::time::Instant::now();
-            
-            while !response_received.load(Ordering::SeqCst) {
-                if start.elapsed() > timeout {
-                    eprintln!("Timeout waiting for response");
-                    break;
+            // Only wait for chat event if this wasn't a command/directive
+            if !was_command {
+                // Wait for response (up to 120 seconds)
+                let timeout = tokio::time::Duration::from_secs(120);
+                let start = tokio::time::Instant::now();
+                
+                while !response_received.load(Ordering::SeqCst) {
+                    if start.elapsed() > timeout {
+                        eprintln!("Timeout waiting for response");
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
             
             print!("\n> ");
@@ -268,11 +274,12 @@ async fn run_client(
     Ok(())
 }
 
+/// Returns true if the response was a command/directive (no need to wait for chat event)
 async fn send_chat(
     conn: &Connection,
     session_key: &str,
     message: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let run_id = uuid::Uuid::new_v4().to_string();
     
     let res = conn
@@ -290,9 +297,36 @@ async fn send_chat(
         if let Some(err) = res.error {
             eprintln!("Error: {}", err.message);
         }
+        return Ok(true); // Don't wait for event on error
     }
 
-    Ok(())
+    // Check if this was a command or directive-only response
+    if let Some(payload) = &res.payload {
+        if let Some(status) = payload.get("status").and_then(|s| s.as_str()) {
+            match status {
+                "command" => {
+                    // Command was handled - print response
+                    if let Some(response) = payload.get("response").and_then(|r| r.as_str()) {
+                        println!("{}", response);
+                    }
+                    if let Some(error) = payload.get("error").and_then(|e| e.as_str()) {
+                        eprintln!("Error: {}", error);
+                    }
+                    return Ok(true); // Don't wait for chat event
+                }
+                "directive-only" => {
+                    // Directive acknowledged
+                    if let Some(response) = payload.get("response").and_then(|r| r.as_str()) {
+                        println!("{}", response);
+                    }
+                    return Ok(true); // Don't wait for chat event
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(false) // Wait for chat event
 }
 
 fn format_content(content: &serde_json::Value) -> String {

@@ -284,6 +284,44 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
+    const messageText = params.message;
+
+    // Check for slash commands first
+    const command = parseCommand(messageText);
+    if (command) {
+      const commandResult = await this.handleSlashCommandForChat(
+        command,
+        params.sessionKey,
+      );
+      
+      if (commandResult.handled) {
+        this.sendOk(ws, frame.id, { 
+          status: "command",
+          command: command.name,
+          response: commandResult.response,
+          error: commandResult.error,
+        });
+        return;
+      }
+    }
+
+    // Parse inline directives
+    const directives = parseDirectives(messageText);
+    
+    // If message is only directives, acknowledge and return
+    if (isDirectiveOnly(messageText)) {
+      const ack = formatDirectiveAck(directives);
+      this.sendOk(ws, frame.id, { 
+        status: "directive-only",
+        response: ack,
+        directives: {
+          thinkLevel: directives.thinkLevel,
+          model: directives.model,
+        },
+      });
+      return;
+    }
+
     const sessionStub = this.env.SESSION.get(
       this.env.SESSION.idFromName(params.sessionKey),
     );
@@ -299,16 +337,158 @@ export class Gateway extends DurableObject<Env> {
     };
 
     try {
+      // Apply directive overrides for this message
+      const messageOverrides: {
+        thinkLevel?: string;
+        model?: { provider: string; id: string };
+      } = {};
+      
+      if (directives.thinkLevel) {
+        messageOverrides.thinkLevel = directives.thinkLevel;
+      }
+      if (directives.model) {
+        messageOverrides.model = directives.model;
+      }
+
       const result = await sessionStub.chatSend(
-        params.message,
+        directives.cleaned, // Send cleaned message without directives
         params.runId,
         JSON.parse(JSON.stringify(this.getAllTools())),
         params.sessionKey,
+        messageOverrides,
       );
 
-      this.sendOk(ws, frame.id, { status: "started", runId: result.runId });
+      this.sendOk(ws, frame.id, { 
+        status: "started", 
+        runId: result.runId,
+        directives: directives.hasThinkDirective || directives.hasModelDirective ? {
+          thinkLevel: directives.thinkLevel,
+          model: directives.model,
+        } : undefined,
+      });
     } catch (e) {
       this.sendError(ws, frame.id, 500, String(e));
+    }
+  }
+
+  /**
+   * Handle a slash command for chat.send (no channel context)
+   */
+  private async handleSlashCommandForChat(
+    command: { name: string; args: string },
+    sessionKey: string,
+  ): Promise<{ handled: boolean; response?: string; error?: string }> {
+    const sessionStub = this.env.SESSION.get(
+      this.env.SESSION.idFromName(sessionKey),
+    );
+
+    try {
+      switch (command.name) {
+        case "reset": {
+          const result = await sessionStub.reset();
+          return {
+            handled: true,
+            response: `Session reset. Archived ${result.archivedMessages} messages.`,
+          };
+        }
+
+        case "compact": {
+          const keepCount = command.args ? parseInt(command.args, 10) : 20;
+          if (isNaN(keepCount) || keepCount < 1) {
+            return { handled: true, error: "Invalid count. Usage: /compact [N]" };
+          }
+          const result = await sessionStub.compact(keepCount);
+          return {
+            handled: true,
+            response: `Compacted session. Kept ${result.keptMessages} messages, archived ${result.trimmedMessages}.`,
+          };
+        }
+
+        case "stop": {
+          return {
+            handled: true,
+            response: "Stop command received. (Run cancellation not yet implemented)",
+          };
+        }
+
+        case "status": {
+          const info = await sessionStub.get();
+          const stats = await sessionStub.stats();
+          const config = this.getFullConfig();
+          
+          const lines = [
+            `Session: ${sessionKey}`,
+            `Messages: ${info.messageCount}`,
+            `Tokens: ${stats.tokens.input} in / ${stats.tokens.output} out`,
+            `Model: ${config.model.provider}/${config.model.id}`,
+            info.settings.thinkingLevel ? `Thinking: ${info.settings.thinkingLevel}` : null,
+            info.resetPolicy ? `Reset: ${info.resetPolicy.mode}` : null,
+          ].filter(Boolean);
+          
+          return { handled: true, response: lines.join("\n") };
+        }
+
+        case "model": {
+          if (!command.args) {
+            const info = await sessionStub.get();
+            const config = this.getFullConfig();
+            const effectiveModel = info.settings.model || config.model;
+            const aliases = listModelAliases().join(", ");
+            return {
+              handled: true,
+              response: `Current model: ${effectiveModel.provider}/${effectiveModel.id}\nAliases: ${aliases}`,
+            };
+          }
+          
+          const resolved = resolveModelAlias(command.args);
+          if (!resolved) {
+            const aliases = listModelAliases().join(", ");
+            return {
+              handled: true,
+              error: `Unknown model: ${command.args}\nAvailable: ${aliases}`,
+            };
+          }
+          
+          await sessionStub.patch({ settings: { model: resolved } });
+          return {
+            handled: true,
+            response: `Model set to ${resolved.provider}/${resolved.id}`,
+          };
+        }
+
+        case "think": {
+          if (!command.args) {
+            const info = await sessionStub.get();
+            return {
+              handled: true,
+              response: `Thinking level: ${info.settings.thinkingLevel || "default"}\nLevels: off, low, medium, high`,
+            };
+          }
+          
+          const level = normalizeThinkLevel(command.args);
+          if (!level) {
+            return {
+              handled: true,
+              error: `Invalid level: ${command.args}\nLevels: off, low, medium, high`,
+            };
+          }
+          
+          await sessionStub.patch({ settings: { thinkingLevel: level } });
+          return {
+            handled: true,
+            response: `Thinking level set to ${level}`,
+          };
+        }
+
+        case "help": {
+          return { handled: true, response: HELP_TEXT };
+        }
+
+        default:
+          return { handled: false };
+      }
+    } catch (e) {
+      return { handled: true, error: `Command failed: ${e}` };
     }
   }
 
