@@ -146,10 +146,26 @@ export class Session extends DurableObject<Env> {
 
   currentRunId: string | null = null;
   currentTools: ToolDefinition[] = [];
+  
+  // Per-message overrides (from directives)
+  currentMessageOverrides: {
+    thinkLevel?: string;
+    model?: { provider: string; id: string };
+  } = {};
 
-  async chatSend(message: string, runId: string, tools: ToolDefinition[], sessionKey: string): Promise<ChatSendResult> {
+  async chatSend(
+    message: string,
+    runId: string,
+    tools: ToolDefinition[],
+    sessionKey: string,
+    messageOverrides?: {
+      thinkLevel?: string;
+      model?: { provider: string; id: string };
+    },
+  ): Promise<ChatSendResult> {
     this.currentRunId = runId;
     this.currentTools = tools;
+    this.currentMessageOverrides = messageOverrides ?? {};
 
     if (!this.state.sessionKey) {
       this.state.sessionKey = sessionKey;
@@ -314,9 +330,22 @@ export class Session extends DurableObject<Env> {
     const config: GsvConfig = await gateway.getConfig();
 
     const sessionSettings = this.state.settings;
-    const effectiveModel = sessionSettings.model || config.model;
+    
+    // Apply message overrides (from directives) > session settings > global config
+    const effectiveModel = 
+      this.currentMessageOverrides.model || 
+      sessionSettings.model || 
+      config.model;
     const effectiveSystemPrompt =
       sessionSettings.systemPrompt || config.systemPrompt || "You are a helpful assistant with access to tools.";
+    
+    // Log if using per-message overrides
+    if (this.currentMessageOverrides.model) {
+      console.log(`[Session] Using directive model override: ${this.currentMessageOverrides.model.provider}/${this.currentMessageOverrides.model.id}`);
+    }
+    if (this.currentMessageOverrides.thinkLevel) {
+      console.log(`[Session] Using directive thinking level: ${this.currentMessageOverrides.thinkLevel}`);
+    }
 
     const tools: Tool[] = this.currentTools.map((t) => ({
       name: t.name,

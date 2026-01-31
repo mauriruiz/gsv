@@ -22,6 +22,8 @@ import {
 } from "./types";
 import { isWebSocketRequest, validateFrame, isWsConnected } from "./utils";
 import { GsvConfig, DEFAULT_CONFIG, mergeConfig } from "./config";
+import { parseCommand, HELP_TEXT, normalizeThinkLevel, resolveModelAlias, listModelAliases } from "./commands";
+import { parseDirectives, isDirectiveOnly, formatDirectiveAck } from "./directives";
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -733,7 +735,6 @@ export class Gateway extends DurableObject<Env> {
 
     // Generate session key from channel context
     // Format: agent:{agentId}:{channel}:{peerKind}:{peerId}
-    // TODO: Add agent binding resolution (for now, default to "main")
     const agentId = "main";
     const sessionKey = this.buildSessionKeyFromChannel(agentId, params.channel, params.peer);
 
@@ -746,6 +747,64 @@ export class Gateway extends DurableObject<Env> {
       };
     }
 
+    const messageText = params.message.text;
+
+    // Check for slash commands first
+    const command = parseCommand(messageText);
+    if (command) {
+      const commandResult = await this.handleSlashCommand(
+        command,
+        sessionKey,
+        params.channel,
+        params.accountId,
+        params.peer,
+        params.message.id,
+      );
+      
+      if (commandResult.handled) {
+        // Send command response back to channel
+        this.sendChannelResponse(
+          params.channel,
+          params.accountId,
+          params.peer,
+          params.message.id,
+          commandResult.response || commandResult.error || "Command executed",
+        );
+        this.sendOk(ws, frame.id, { 
+          status: "command",
+          command: command.name,
+          response: commandResult.response,
+        });
+        return;
+      }
+    }
+
+    // Parse inline directives
+    const directives = parseDirectives(messageText);
+    
+    // If message is only directives, acknowledge and return
+    if (isDirectiveOnly(messageText)) {
+      const ack = formatDirectiveAck(directives);
+      if (ack) {
+        this.sendChannelResponse(
+          params.channel,
+          params.accountId,
+          params.peer,
+          params.message.id,
+          ack,
+        );
+      }
+      this.sendOk(ws, frame.id, { 
+        status: "directive-only",
+        directives: {
+          thinkLevel: directives.thinkLevel,
+          model: directives.model,
+        },
+      });
+      return;
+    }
+
+    // Update session registry
     const now = Date.now();
     const existingSession = this.sessionRegistry[sessionKey];
     this.sessionRegistry[sessionKey] = {
@@ -761,14 +820,27 @@ export class Gateway extends DurableObject<Env> {
     );
 
     try {
-      const messageText = params.message.text;
       const runId = crypto.randomUUID();
 
+      // Apply directive overrides for this message
+      const messageOverrides: {
+        thinkLevel?: string;
+        model?: { provider: string; id: string };
+      } = {};
+      
+      if (directives.thinkLevel) {
+        messageOverrides.thinkLevel = directives.thinkLevel;
+      }
+      if (directives.model) {
+        messageOverrides.model = directives.model;
+      }
+
       const result = await sessionStub.chatSend(
-        messageText,
+        directives.cleaned, // Send cleaned message without directives
         runId,
         JSON.parse(JSON.stringify(this.getAllTools())),
         sessionKey,
+        messageOverrides,
       );
 
       this.pendingChannelResponses[sessionKey] = {
@@ -782,10 +854,181 @@ export class Gateway extends DurableObject<Env> {
         status: "started", 
         runId: result.runId,
         sessionKey,
+        directives: directives.hasThinkDirective || directives.hasModelDirective ? {
+          thinkLevel: directives.thinkLevel,
+          model: directives.model,
+        } : undefined,
       });
     } catch (e) {
       this.sendError(ws, frame.id, 500, String(e));
     }
+  }
+
+  /**
+   * Handle a slash command and return the result
+   */
+  private async handleSlashCommand(
+    command: { name: string; args: string },
+    sessionKey: string,
+    channel: ChannelId,
+    accountId: string,
+    peer: PeerInfo,
+    messageId: string,
+  ): Promise<{ handled: boolean; response?: string; error?: string }> {
+    const sessionStub = this.env.SESSION.get(
+      this.env.SESSION.idFromName(sessionKey),
+    );
+
+    try {
+      switch (command.name) {
+        case "reset": {
+          const result = await sessionStub.reset();
+          return {
+            handled: true,
+            response: `Session reset. Archived ${result.archivedMessages} messages.`,
+          };
+        }
+
+        case "compact": {
+          const keepCount = command.args ? parseInt(command.args, 10) : 20;
+          if (isNaN(keepCount) || keepCount < 1) {
+            return { handled: true, error: "Invalid count. Usage: /compact [N]" };
+          }
+          const result = await sessionStub.compact(keepCount);
+          return {
+            handled: true,
+            response: `Compacted session. Kept ${result.keptMessages} messages, archived ${result.trimmedMessages}.`,
+          };
+        }
+
+        case "stop": {
+          // TODO: Implement run cancellation
+          return {
+            handled: true,
+            response: "Stop command received. (Run cancellation not yet implemented)",
+          };
+        }
+
+        case "status": {
+          const info = await sessionStub.get();
+          const stats = await sessionStub.stats();
+          const config = this.getFullConfig();
+          
+          const lines = [
+            `**Session Status**`,
+            `• Session: \`${sessionKey}\``,
+            `• Messages: ${info.messageCount}`,
+            `• Tokens: ${stats.tokens.input} in / ${stats.tokens.output} out`,
+            `• Model: ${config.model.provider}/${config.model.id}`,
+            info.settings.thinkingLevel ? `• Thinking: ${info.settings.thinkingLevel}` : null,
+            info.resetPolicy ? `• Reset: ${info.resetPolicy.mode}` : null,
+          ].filter(Boolean);
+          
+          return { handled: true, response: lines.join("\n") };
+        }
+
+        case "model": {
+          if (!command.args) {
+            // Show current model
+            const info = await sessionStub.get();
+            const config = this.getFullConfig();
+            const effectiveModel = info.settings.model || config.model;
+            const aliases = listModelAliases().join(", ");
+            return {
+              handled: true,
+              response: `Current model: ${effectiveModel.provider}/${effectiveModel.id}\n\nAliases: ${aliases}`,
+            };
+          }
+          
+          // Set model
+          const resolved = resolveModelAlias(command.args);
+          if (!resolved) {
+            const aliases = listModelAliases().join(", ");
+            return {
+              handled: true,
+              error: `Unknown model: ${command.args}\n\nAvailable: ${aliases}`,
+            };
+          }
+          
+          await sessionStub.patch({ settings: { model: resolved } });
+          return {
+            handled: true,
+            response: `Model set to ${resolved.provider}/${resolved.id}`,
+          };
+        }
+
+        case "think": {
+          if (!command.args) {
+            const info = await sessionStub.get();
+            return {
+              handled: true,
+              response: `Thinking level: ${info.settings.thinkingLevel || "default"}\n\nLevels: off, low, medium, high`,
+            };
+          }
+          
+          const level = normalizeThinkLevel(command.args);
+          if (!level) {
+            return {
+              handled: true,
+              error: `Invalid level: ${command.args}\n\nLevels: off, low, medium, high`,
+            };
+          }
+          
+          await sessionStub.patch({ settings: { thinkingLevel: level } });
+          return {
+            handled: true,
+            response: `Thinking level set to ${level}`,
+          };
+        }
+
+        case "help": {
+          return { handled: true, response: HELP_TEXT };
+        }
+
+        default:
+          return { handled: false };
+      }
+    } catch (e) {
+      return { handled: true, error: `Command failed: ${e}` };
+    }
+  }
+
+  /**
+   * Send a response back to a channel
+   */
+  private sendChannelResponse(
+    channel: ChannelId,
+    accountId: string,
+    peer: PeerInfo,
+    replyToId: string,
+    text: string,
+  ): void {
+    const channelKey = `${channel}:${accountId}`;
+    const channelWs = this.channels.get(channelKey);
+    
+    if (!channelWs || channelWs.readyState !== WebSocket.OPEN) {
+      console.log(`[Gateway] Channel ${channelKey} not connected for command response`);
+      return;
+    }
+
+    const outbound: ChannelOutboundPayload = {
+      channel,
+      accountId,
+      peer,
+      sessionKey: "", // Not associated with a session for commands
+      message: {
+        text,
+        replyToId,
+      },
+    };
+
+    const evt: EventFrame<ChannelOutboundPayload> = {
+      type: "evt",
+      event: "channel.outbound",
+      payload: outbound,
+    };
+
+    channelWs.send(JSON.stringify(evt));
   }
 
   pendingChannelResponses = PersistedObject<Record<string, {
