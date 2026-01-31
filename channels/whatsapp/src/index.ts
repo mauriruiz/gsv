@@ -51,12 +51,78 @@ export { WhatsAppAccount } from "./whatsapp-account";
 
 interface Env {
   WHATSAPP_ACCOUNT: DurableObjectNamespace;
+  AUTH_TOKEN?: string;
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const encoder = new TextEncoder();
+  const bufA = encoder.encode(a);
+  const bufB = encoder.encode(b);
+  let result = 0;
+  for (let i = 0; i < bufA.length; i++) {
+    result |= bufA[i] ^ bufB[i];
+  }
+  return result === 0;
+}
+
+function checkAuth(request: Request, env: Env): Response | null {
+  // If no token configured, skip auth (development mode)
+  if (!env.AUTH_TOKEN) {
+    return null;
+  }
+
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader) {
+    return Response.json(
+      { error: "Missing Authorization header" },
+      { status: 401, headers: { "WWW-Authenticate": "Bearer" } }
+    );
+  }
+
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    return Response.json(
+      { error: "Invalid Authorization header format. Use: Bearer <token>" },
+      { status: 401, headers: { "WWW-Authenticate": "Bearer" } }
+    );
+  }
+
+  const token = match[1];
+  if (!timingSafeEqual(token, env.AUTH_TOKEN)) {
+    return Response.json(
+      { error: "Invalid token" },
+      { status: 403 }
+    );
+  }
+
+  return null; // Auth passed
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Health check - no auth required
+    if (path === "/" || path === "/health") {
+      return Response.json({
+        service: "gsv-channel-whatsapp",
+        status: "ok",
+        authRequired: !!env.AUTH_TOKEN,
+        usage: {
+          login: "POST /account/:accountId/login?format=html",
+          logout: "POST /account/:accountId/logout",
+          stop: "POST /account/:accountId/stop",
+          wake: "POST /account/:accountId/wake",
+          status: "GET /account/:accountId/status",
+        },
+      });
+    }
+
+    // All other routes require auth
+    const authError = checkAuth(request, env);
+    if (authError) return authError;
 
     // Route: /account/:accountId/...
     const accountMatch = path.match(/^\/account\/([^\/]+)(\/.*)?$/);
@@ -79,22 +145,6 @@ export default {
     if (path === "/accounts") {
       return Response.json({
         message: "Account listing not yet implemented. Use /account/:accountId/status to check a specific account.",
-      });
-    }
-
-    // Health check
-    if (path === "/" || path === "/health") {
-      return Response.json({
-        service: "gsv-channel-whatsapp",
-        status: "ok",
-        usage: {
-          login: "POST /account/:accountId/login",
-          logout: "POST /account/:accountId/logout",
-          start: "POST /account/:accountId/start",
-          stop: "POST /account/:accountId/stop",
-          wake: "POST /account/:accountId/wake",
-          status: "GET /account/:accountId/status",
-        },
       });
     }
 
