@@ -43,6 +43,8 @@ type PendingToolCall = {
 type ChatSendResult = {
   ok: boolean;
   runId: string;
+  queued?: boolean;
+  queuePosition?: number;
 };
 
 type ToolResultInput = {
@@ -68,6 +70,19 @@ export type TokenUsage = {
   input: number;
   output: number;
   total: number;
+};
+
+// Queued message waiting to be processed
+export type QueuedMessage = {
+  id: string;
+  text: string;
+  runId: string;
+  media?: MediaAttachment[];
+  messageOverrides?: {
+    thinkLevel?: string;
+    model?: { provider: string; id: string };
+  };
+  queuedAt: number;
 };
 
 // State stored in PersistedObject (small, no messages)
@@ -125,6 +140,9 @@ export type SessionStats = {
   createdAt: number;
   updatedAt: number;
   uptime: number;
+  // Queue status
+  isProcessing: boolean;
+  queueSize: number;
 };
 
 export type ResetResult = {
@@ -209,6 +227,15 @@ export class Session extends DurableObject<Env> {
     this.ctx.storage.kv,
     { prefix: "pendingToolCalls:" },
   );
+
+  // Message queue for sequential processing
+  messageQueue = PersistedObject<QueuedMessage[]>(
+    this.ctx.storage.kv,
+    { prefix: "messageQueue:", defaults: [] },
+  );
+
+  // Processing state (not persisted - if we crash mid-processing, queue will retry)
+  private isProcessing = false;
 
   currentRunId: string | null = null;
   currentTools: ToolDefinition[] = [];
@@ -408,6 +435,10 @@ export class Session extends DurableObject<Env> {
 
   // ---- Main API ----
 
+  /**
+   * Send a message to the agent.
+   * If another message is being processed, this will be queued.
+   */
   async chatSend(
     message: string,
     runId: string,
@@ -419,27 +450,102 @@ export class Session extends DurableObject<Env> {
     },
     media?: MediaAttachment[],
   ): Promise<ChatSendResult> {
-    this.currentRunId = runId;
-    this.currentTools = tools;
-    this.currentMessageOverrides = messageOverrides ?? {};
-
+    // Initialize session key if needed
     if (!this.meta.sessionKey) {
       this.meta.sessionKey = sessionKey;
     }
 
-    if (this.shouldAutoReset()) {
-      console.log(`[Session] Auto-reset triggered for ${sessionKey}`);
-      await this.doReset();
+    // If currently processing, queue this message
+    if (this.isProcessing) {
+      const queuedMessage: QueuedMessage = {
+        id: crypto.randomUUID(),
+        text: message,
+        runId,
+        media,
+        messageOverrides,
+        queuedAt: Date.now(),
+      };
+      
+      this.messageQueue = [...this.messageQueue, queuedMessage];
+      console.log(`[Session] Queued message ${queuedMessage.id}, queue size: ${this.messageQueue.length}`);
+      
+      return { ok: true, runId, queued: true, queuePosition: this.messageQueue.length };
     }
 
-    // Build and store user message
-    const userMessage = this.buildUserMessage(message, media);
-    this.addMessage(userMessage);
-    this.meta.updatedAt = Date.now();
-
-    await this.continueAgentLoop();
-
+    // Not processing - start processing this message
+    await this.processMessage(message, runId, tools, messageOverrides, media);
+    
     return { ok: true, runId };
+  }
+
+  /**
+   * Process a single message and then check the queue for more
+   */
+  private async processMessage(
+    message: string,
+    runId: string,
+    tools: ToolDefinition[],
+    messageOverrides?: {
+      thinkLevel?: string;
+      model?: { provider: string; id: string };
+    },
+    media?: MediaAttachment[],
+  ): Promise<void> {
+    this.isProcessing = true;
+    this.currentRunId = runId;
+    this.currentTools = tools;
+    this.currentMessageOverrides = messageOverrides ?? {};
+
+    try {
+      if (this.shouldAutoReset()) {
+        console.log(`[Session] Auto-reset triggered for ${this.meta.sessionKey}`);
+        await this.doReset();
+      }
+
+      // Build and store user message
+      const userMessage = this.buildUserMessage(message, media);
+      this.addMessage(userMessage);
+      this.meta.updatedAt = Date.now();
+
+      await this.continueAgentLoop();
+    } finally {
+      this.isProcessing = false;
+      
+      // Process next queued message if any
+      await this.processNextQueued();
+    }
+  }
+
+  /**
+   * Process the next message in the queue, if any
+   */
+  private async processNextQueued(): Promise<void> {
+    if (this.messageQueue.length === 0) {
+      return;
+    }
+
+    const [next, ...remaining] = this.messageQueue;
+    this.messageQueue = remaining;
+    
+    console.log(`[Session] Processing queued message ${next.id}, ${remaining.length} remaining`);
+    
+    await this.processMessage(
+      next.text,
+      next.runId,
+      this.currentTools, // Reuse tools from previous call
+      next.messageOverrides,
+      next.media,
+    );
+  }
+
+  /**
+   * Get queue status (for heartbeat skip checks)
+   */
+  getQueueStatus(): { isProcessing: boolean; queueSize: number } {
+    return {
+      isProcessing: this.isProcessing,
+      queueSize: this.messageQueue.length,
+    };
   }
 
   /**
@@ -993,6 +1099,7 @@ export class Session extends DurableObject<Env> {
 
   async stats(): Promise<SessionStats> {
     const now = Date.now();
+    const queueStatus = this.getQueueStatus();
     return {
       sessionKey: this.meta.sessionKey,
       sessionId: this.meta.sessionId,
@@ -1005,6 +1112,8 @@ export class Session extends DurableObject<Env> {
       createdAt: this.meta.createdAt,
       updatedAt: this.meta.updatedAt,
       uptime: now - this.meta.createdAt,
+      isProcessing: queueStatus.isProcessing,
+      queueSize: queueStatus.queueSize,
     };
   }
 
