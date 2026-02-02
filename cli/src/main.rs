@@ -1,18 +1,13 @@
-mod config;
-mod connection;
-mod protocol;
-mod tools;
-
 use clap::{Parser, Subcommand};
-use config::CliConfig;
-use connection::Connection;
-use protocol::{Frame, ToolInvokePayload, ToolResultParams};
+use gsv::config::{self, CliConfig};
+use gsv::connection::Connection;
+use gsv::protocol::{Frame, ToolInvokePayload, ToolResultParams};
+use gsv::tools::{all_tools_with_workspace, Tool};
 use serde_json::json;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tools::{all_tools_with_workspace, Tool};
 
 #[derive(Parser)]
 #[command(
@@ -28,10 +23,6 @@ struct Cli {
     /// Auth token (overrides config file, or set GSV_TOKEN env var)
     #[arg(short, long, env = "GSV_TOKEN")]
     token: Option<String>,
-
-    /// Workspace directory (overrides config file, or set GSV_WORKSPACE env)
-    #[arg(short, long, env = "GSV_WORKSPACE")]
-    workspace: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -58,9 +49,13 @@ enum Commands {
 
     /// Run as a tool-providing node
     Node {
-        /// Node ID (default: hostname)
+        /// Node ID (default: hostname) - used as namespace prefix for tools
         #[arg(long)]
         id: Option<String>,
+
+        /// Workspace directory for file tools (default: current directory)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
 
     /// Get or set gateway configuration (remote)
@@ -81,8 +76,11 @@ enum Commands {
         action: SessionAction,
     },
 
-    /// List available tools
-    Tools,
+    /// Manage tools (list, call)
+    Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
 
     /// Mount R2 bucket to local workspace using rclone
     Mount {
@@ -162,10 +160,6 @@ enum MountAction {
         /// R2 bucket name (default: gsv-storage)
         #[arg(long, default_value = "gsv-storage")]
         bucket: String,
-
-        /// R2 bucket path prefix (default: agents/main)
-        #[arg(long, default_value = "agents/main")]
-        prefix: String,
     },
 
     /// Start the mount (requires setup first)
@@ -180,6 +174,22 @@ enum MountAction {
 
     /// Show mount status
     Status,
+}
+
+#[derive(Subcommand)]
+enum ToolsAction {
+    /// List available tools from connected nodes
+    List,
+
+    /// Call a tool directly
+    Call {
+        /// Tool name (e.g., "macbook:Bash")
+        tool: String,
+
+        /// Arguments as JSON object (e.g., '{"command": "ls -la"}')
+        #[arg(default_value = "{}")]
+        args: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -281,6 +291,12 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install rustls crypto provider on Linux aarch64 (where we use rustls instead of native TLS)
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let cli = Cli::parse();
 
     // Load config from file
@@ -289,7 +305,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Merge CLI args with config (CLI takes precedence)
     let url = cli.url.unwrap_or_else(|| cfg.gateway_url());
     let token = cli.token.or_else(|| cfg.gateway_token());
-    let workspace = cli.workspace.unwrap_or_else(|| cfg.workspace_path());
 
     match cli.command {
         Commands::Init { force } => run_init(force),
@@ -297,12 +312,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let session = session.unwrap_or_else(|| cfg.default_session());
             run_client(&url, token, message, &session).await
         }
-        Commands::Node { id } => run_node(&url, token, id, workspace).await,
+        Commands::Node { id, workspace } => {
+            let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            run_node(&url, token, id, workspace).await
+        }
         Commands::Config { action } => run_config(&url, token, action).await,
         Commands::LocalConfig { action } => run_local_config(action),
         Commands::Session { action } => run_session(&url, token, action).await,
-        Commands::Tools => run_tools(&url, token).await,
-        Commands::Mount { action } => run_mount(action, workspace, &cfg).await,
+        Commands::Tools { action } => run_tools(&url, token, action).await,
+        Commands::Mount { action } => run_mount(action, &cfg).await,
         Commands::Heartbeat { action } => run_heartbeat(&url, token, action).await,
         Commands::Pair { action } => run_pair(&url, token, action).await,
     }
@@ -358,7 +376,6 @@ fn run_local_config(action: LocalConfigAction) -> Result<(), Box<dyn std::error:
                         "****".to_string()
                     }
                 }),
-                "workspace.path" => cfg.workspace.path.map(|p| p.display().to_string()),
                 "r2.account_id" => cfg.r2.account_id,
                 "r2.access_key_id" => cfg.r2.access_key_id.map(|s| {
                     if s.len() > 8 {
@@ -368,14 +385,12 @@ fn run_local_config(action: LocalConfigAction) -> Result<(), Box<dyn std::error:
                     }
                 }),
                 "r2.bucket" => cfg.r2.bucket,
-                "r2.prefix" => cfg.r2.prefix,
                 "session.default_key" => cfg.session.default_key,
                 _ => {
                     eprintln!("Unknown config key: {}", key);
                     eprintln!("\nValid keys:");
                     eprintln!("  gateway.url, gateway.token");
-                    eprintln!("  workspace.path");
-                    eprintln!("  r2.account_id, r2.access_key_id, r2.bucket, r2.prefix");
+                    eprintln!("  r2.account_id, r2.access_key_id, r2.bucket");
                     eprintln!("  session.default_key");
                     return Ok(());
                 }
@@ -393,12 +408,10 @@ fn run_local_config(action: LocalConfigAction) -> Result<(), Box<dyn std::error:
             match key.as_str() {
                 "gateway.url" => cfg.gateway.url = Some(value.clone()),
                 "gateway.token" => cfg.gateway.token = Some(value.clone()),
-                "workspace.path" => cfg.workspace.path = Some(PathBuf::from(&value)),
                 "r2.account_id" => cfg.r2.account_id = Some(value.clone()),
                 "r2.access_key_id" => cfg.r2.access_key_id = Some(value.clone()),
                 "r2.secret_access_key" => cfg.r2.secret_access_key = Some(value.clone()),
                 "r2.bucket" => cfg.r2.bucket = Some(value.clone()),
-                "r2.prefix" => cfg.r2.prefix = Some(value.clone()),
                 "session.default_key" => cfg.session.default_key = Some(value.clone()),
                 _ => {
                     eprintln!("Unknown config key: {}", key);
@@ -816,7 +829,6 @@ async fn run_pair(
 
     Ok(())
 }
-
 /// Returns true if the response was a command/directive (no need to wait for chat event)
 async fn send_chat(
     conn: &Connection,
@@ -953,32 +965,77 @@ async fn run_config(
     Ok(())
 }
 
-async fn run_tools(url: &str, token: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tools(
+    url: &str,
+    token: Option<String>,
+    action: ToolsAction,
+) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::connect_with_options(url, "client", None, |_| {}, None, token).await?;
 
-    let res = conn.request("tools.list", None).await?;
+    match action {
+        ToolsAction::List => {
+            let res = conn.request("tools.list", None).await?;
 
-    if res.ok {
-        if let Some(payload) = res.payload {
-            if let Some(tools) = payload.get("tools").and_then(|t| t.as_array()) {
-                if tools.is_empty() {
-                    println!("No tools available (is a node connected?)");
-                } else {
-                    println!("Available tools ({}):", tools.len());
-                    for tool in tools {
-                        let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                        let desc = tool
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("");
-                        println!("  - {}: {}", name, desc);
+            if res.ok {
+                if let Some(payload) = res.payload {
+                    if let Some(tools) = payload.get("tools").and_then(|t| t.as_array()) {
+                        if tools.is_empty() {
+                            println!("No tools available (is a node connected?)");
+                        } else {
+                            println!("Available tools ({}):", tools.len());
+                            for tool in tools {
+                                let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                let desc = tool
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("");
+                                println!("  {} - {}", name, desc);
+                            }
+                        }
                     }
                 }
+            } else if let Some(err) = res.error {
+                eprintln!("Error: {}", err.message);
             }
         }
-    } else {
-        if let Some(err) = res.error {
-            eprintln!("Error: {}", err.message);
+
+        ToolsAction::Call { tool, args } => {
+            // Parse args as JSON
+            let args: serde_json::Value = serde_json::from_str(&args).map_err(|e| {
+                format!("Invalid JSON args: {}. Expected format: '{{\"key\": \"value\"}}'", e)
+            })?;
+
+            println!("Calling tool: {}", tool);
+            println!("Args: {}", serde_json::to_string_pretty(&args)?);
+            println!();
+
+            let res = conn
+                .request(
+                    "tool.invoke",
+                    Some(json!({
+                        "tool": tool,
+                        "args": args,
+                    })),
+                )
+                .await?;
+
+            if res.ok {
+                if let Some(payload) = res.payload {
+                    if let Some(result) = payload.get("result") {
+                        println!("Result:");
+                        // Try to print as pretty JSON, fall back to raw
+                        if let Some(s) = result.as_str() {
+                            println!("{}", s);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(result)?);
+                        }
+                    } else {
+                        println!("Result: {}", serde_json::to_string_pretty(&payload)?);
+                    }
+                }
+            } else if let Some(err) = res.error {
+                eprintln!("Error: {}", err.message);
+            }
         }
     }
 
@@ -1579,7 +1636,6 @@ async fn run_node(
 
 async fn run_mount(
     action: MountAction,
-    workspace: PathBuf,
     cfg: &CliConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = dirs::config_dir()
@@ -1594,7 +1650,6 @@ async fn run_mount(
             access_key_id,
             secret_access_key,
             bucket,
-            prefix,
         } => {
             // Use CLI args, falling back to config file
             let account_id = if account_id.is_empty() {
@@ -1628,14 +1683,7 @@ async fn run_mount(
             } else {
                 bucket
             };
-            let prefix = if prefix == "agents/main" {
-                cfg.r2
-                    .prefix
-                    .clone()
-                    .unwrap_or_else(|| "agents/main".to_string())
-            } else {
-                prefix
-            };
+
             // Check if rclone is installed
             let rclone_check = std::process::Command::new("rclone")
                 .arg("--version")
@@ -1651,9 +1699,7 @@ async fn run_mount(
             // Create config directory
             std::fs::create_dir_all(&config_dir)?;
 
-            // Generate rclone config with two remotes:
-            // 1. gsv-bucket: Full bucket access (for human browsing)
-            // 2. gsv-workspace: Agent-specific workspace (scoped to prefix)
+            // Generate rclone config
             let endpoint = format!("{}.r2.cloudflarestorage.com", account_id);
             let config_content = format!(
                 r#"[gsv-r2]
@@ -1667,12 +1713,8 @@ acl = private
 [gsv-bucket]
 type = alias
 remote = gsv-r2:{}
-
-[gsv-workspace]
-type = alias
-remote = gsv-r2:{}/{}
 "#,
-                access_key_id, secret_access_key, endpoint, bucket, bucket, prefix
+                access_key_id, secret_access_key, endpoint, bucket
             );
 
             std::fs::write(&rclone_config, &config_content)?;
@@ -1681,66 +1723,22 @@ remote = gsv-r2:{}/{}
             println!("\nConfiguration:");
             println!("  Account ID: {}", account_id);
             println!("  Bucket: {}", bucket);
-            println!("  Agent prefix: {}", prefix);
 
-            // Create mount point directory (needs sudo on macOS for /Volumes)
-            #[cfg(target_os = "macos")]
-            let bucket_mount = PathBuf::from("/Volumes/gsv-storage");
-
-            #[cfg(not(target_os = "macos"))]
-            let bucket_mount = dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("gsv-storage");
+            // Create mount point directory (~/.gsv/r2)
+            let bucket_mount = cfg.r2_mount_path();
 
             if !bucket_mount.exists() {
                 println!("\nCreating mount point {}...", bucket_mount.display());
-
-                #[cfg(target_os = "macos")]
-                {
-                    // On macOS, /Volumes requires sudo
-                    let status = std::process::Command::new("sudo")
-                        .arg("mkdir")
-                        .arg("-p")
-                        .arg(&bucket_mount)
-                        .status();
-
-                    if status.is_err() || !status.unwrap().success() {
-                        eprintln!("Failed to create mount point. Run manually:");
-                        eprintln!("  sudo mkdir -p {}", bucket_mount.display());
-                        eprintln!("  sudo chown $USER {}", bucket_mount.display());
-                        return Err("Failed to create mount point".into());
-                    }
-
-                    // Change ownership to current user
-                    let username = std::env::var("USER").unwrap_or_else(|_| "".to_string());
-                    if !username.is_empty() {
-                        let _ = std::process::Command::new("sudo")
-                            .arg("chown")
-                            .arg(&username)
-                            .arg(&bucket_mount)
-                            .status();
-                    }
-
-                    println!("Created {}", bucket_mount.display());
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                {
-                    std::fs::create_dir_all(&bucket_mount)?;
-                    println!("Created {}", bucket_mount.display());
-                }
+                std::fs::create_dir_all(&bucket_mount)?;
+                println!("Created {}", bucket_mount.display());
             } else {
                 println!("\nMount point {} already exists", bucket_mount.display());
             }
 
-            println!("\nMount points:");
-            println!("  Full bucket:     {}", bucket_mount.display());
-            println!(
-                "  Agent workspace: {} -> {}/{}",
-                workspace.display(),
-                bucket_mount.display(),
-                prefix
-            );
+            let r2_mount = cfg.r2_mount_path();
+            println!("\nMount location:");
+            println!("  R2 bucket will be mounted at: {}", r2_mount.display());
+            println!("  Agent configs at: {}/agents/", r2_mount.display());
             println!("\nTo start the mount, run:");
             println!("  gsv mount start");
         }
@@ -1758,14 +1756,6 @@ remote = gsv-r2:{}/{}
                 eprintln!("Run 'gsv mount stop' first if you want to restart.");
                 return Ok(());
             }
-
-            // Read agent prefix from rclone config to know where to symlink
-            let rclone_content = std::fs::read_to_string(&rclone_config)?;
-            let agent_prefix = rclone_content
-                .lines()
-                .find(|l| l.starts_with("remote = gsv-r2:") && l.contains("/agents/"))
-                .and_then(|l| l.split('/').skip(1).collect::<Vec<_>>().join("/").into())
-                .unwrap_or_else(|| "agents/main".to_string());
 
             // Check for FUSE support (kernel extension mode)
             #[cfg(target_os = "macos")]
@@ -1805,14 +1795,8 @@ remote = gsv-r2:{}/{}
                 }
             }
 
-            // Mount paths
-            #[cfg(target_os = "macos")]
-            let bucket_mount = PathBuf::from("/Volumes/gsv-storage");
-
-            #[cfg(not(target_os = "macos"))]
-            let bucket_mount = dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("gsv-storage");
+            // Mount to ~/.gsv/r2
+            let bucket_mount = cfg.r2_mount_path();
 
             #[cfg(target_os = "linux")]
             {
@@ -1863,24 +1847,7 @@ remote = gsv-r2:{}/{}
                 .arg("30s")
                 .arg("--allow-non-empty");
 
-            // Store agent prefix for symlink creation
-            let workspace_target = bucket_mount.join(&agent_prefix);
-
             if foreground {
-                // Create symlink before starting foreground mount
-                // Remove old symlink/dir if exists
-                let _ = std::fs::remove_file(&workspace);
-                let _ = std::fs::remove_dir(&workspace);
-
-                #[cfg(unix)]
-                if std::os::unix::fs::symlink(&workspace_target, &workspace).is_ok() {
-                    println!(
-                        "Symlinked {} -> {}",
-                        workspace.display(),
-                        workspace_target.display()
-                    );
-                }
-
                 println!("Running in foreground. Press Ctrl+C to stop.");
                 let status = cmd.status()?;
                 if !status.success() {
@@ -1917,42 +1884,17 @@ remote = gsv-r2:{}/{}
                     }
                 }
 
-                println!("Full bucket: {}", bucket_mount.display());
-
-                // Create symlink from workspace to agent directory in mount
-                // Remove old symlink/dir if exists
-                let _ = std::fs::remove_file(&workspace);
-                let _ = std::fs::remove_dir(&workspace);
-
-                #[cfg(unix)]
-                if std::os::unix::fs::symlink(&workspace_target, &workspace).is_ok() {
-                    println!(
-                        "Agent workspace: {} -> {}",
-                        workspace.display(),
-                        workspace_target.display()
-                    );
-                } else {
-                    eprintln!(
-                        "Warning: Could not create symlink {} -> {}",
-                        workspace.display(),
-                        workspace_target.display()
-                    );
-                }
-
+                println!("R2 bucket mounted at: {}", bucket_mount.display());
+                println!("Agent configs: {}/agents/", bucket_mount.display());
+                println!("\nTo initialize a workspace, run:");
+                println!("  gsv workspace init [agent_id]");
                 println!("\nTo stop the mount, run:");
                 println!("  gsv mount stop");
             }
         }
 
         MountAction::Stop => {
-            // Mount paths
-            #[cfg(target_os = "macos")]
-            let bucket_mount = PathBuf::from("/Volumes/gsv-storage");
-
-            #[cfg(not(target_os = "macos"))]
-            let bucket_mount = dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("gsv-storage");
+            let bucket_mount = cfg.r2_mount_path();
 
             if !pid_file.exists() {
                 println!("No mount PID file found. Mount may not be running.");
@@ -1976,12 +1918,6 @@ remote = gsv-r2:{}/{}
                         .arg("-u")
                         .arg(&bucket_mount)
                         .status();
-                }
-
-                // Remove workspace symlink if it exists
-                if workspace.is_symlink() {
-                    let _ = std::fs::remove_file(&workspace);
-                    println!("Removed symlink {}", workspace.display());
                 }
 
                 return Ok(());
@@ -2022,22 +1958,10 @@ remote = gsv-r2:{}/{}
                     .status();
             }
 
-            // Remove workspace symlink if it exists
-            if workspace.is_symlink() {
-                let _ = std::fs::remove_file(&workspace);
-                println!("Removed symlink {}", workspace.display());
-            }
         }
 
         MountAction::Status => {
-            // Mount paths
-            #[cfg(target_os = "macos")]
-            let bucket_mount = PathBuf::from("/Volumes/gsv-storage");
-
-            #[cfg(not(target_os = "macos"))]
-            let bucket_mount = dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("gsv-storage");
+            let bucket_mount = cfg.r2_mount_path();
 
             let mut is_running = false;
 
@@ -2078,26 +2002,19 @@ remote = gsv-r2:{}/{}
                     }
                 }
 
-                println!("Agent workspace: {}", workspace.display());
-                if workspace.is_symlink() {
-                    if let Ok(target) = std::fs::read_link(&workspace) {
-                        println!("                 -> {}", target.display());
-                    }
-                }
-
-                // List workspace files
-                let ws_path = if workspace.is_symlink() {
-                    std::fs::read_link(&workspace).unwrap_or(workspace.clone())
-                } else {
-                    workspace.clone()
-                };
-                if let Ok(entries) = std::fs::read_dir(&ws_path) {
-                    let files: Vec<_> = entries
-                        .filter_map(|e| e.ok())
-                        .map(|e| e.file_name().to_string_lossy().to_string())
-                        .collect();
-                    if !files.is_empty() {
-                        println!("                 Files: {}", files.join(", "));
+                // List agent directories
+                let agents_path = bucket_mount.join("agents");
+                if agents_path.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&agents_path) {
+                        let agents: Vec<_> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .collect();
+                        if !agents.is_empty() {
+                            println!("\nAgents found: {}", agents.join(", "));
+                            println!("\nUse 'gsv workspace status <agent>' for workspace details");
+                        }
                     }
                 }
             } else {

@@ -8,10 +8,6 @@ pub struct CliConfig {
     #[serde(default)]
     pub gateway: GatewayConfig,
 
-    /// Workspace settings
-    #[serde(default)]
-    pub workspace: WorkspaceConfig,
-
     /// R2 storage settings (for mount command)
     #[serde(default)]
     pub r2: R2Config,
@@ -39,18 +35,6 @@ impl Default for GatewayConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WorkspaceConfig {
-    /// Local workspace directory path
-    pub path: Option<PathBuf>,
-}
-
-impl Default for WorkspaceConfig {
-    fn default() -> Self {
-        Self { path: None }
-    }
-}
-
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct R2Config {
     /// Cloudflare Account ID
@@ -64,9 +48,6 @@ pub struct R2Config {
 
     /// R2 bucket name
     pub bucket: Option<String>,
-
-    /// Path prefix in the bucket
-    pub prefix: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,21 +121,24 @@ impl CliConfig {
         self.gateway.token.clone()
     }
 
-    /// Get effective workspace path (config -> ~/gsv)
-    pub fn workspace_path(&self) -> PathBuf {
-        self.workspace.path.clone().unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("gsv")
-        })
-    }
-
     /// Get default session key
     pub fn default_session(&self) -> String {
         self.session
             .default_key
             .clone()
             .unwrap_or_else(|| "main".to_string())
+    }
+
+    /// Get the GSV home directory (~/.gsv)
+    pub fn gsv_home(&self) -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".gsv")
+    }
+
+    /// Get the R2 mount path
+    pub fn r2_mount_path(&self) -> PathBuf {
+        self.gsv_home().join("r2")
     }
 }
 
@@ -170,17 +154,12 @@ url = "wss://gateway.stevej.workers.dev/ws"
 # Auth token (keep secret!)
 token = "your-token-here"
 
-[workspace]
-# Local workspace directory for file tools
-# path = "~/gsv"
-
 [r2]
 # Cloudflare R2 credentials (for 'gsv mount' command)
 # account_id = "your-account-id"
 # access_key_id = "your-access-key"
 # secret_access_key = "your-secret-key"
 # bucket = "gsv-storage"
-# prefix = "agents/main"
 
 [session]
 # Default session key

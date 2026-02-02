@@ -22,25 +22,6 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn connect(
-        url: &str,
-        mode: &str,
-        tools: Option<Vec<ToolDefinition>>,
-        on_event: impl Fn(Frame) + Send + 'static + Sync,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::connect_with_options(url, mode, tools, on_event, None, None).await
-    }
-
-    pub async fn connect_with_id(
-        url: &str,
-        mode: &str,
-        tools: Option<Vec<ToolDefinition>>,
-        on_event: impl Fn(Frame) + Send + 'static + Sync,
-        client_id: Option<String>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::connect_with_options(url, mode, tools, on_event, client_id, None).await
-    }
-
     pub async fn connect_with_options(
         url: &str,
         mode: &str,

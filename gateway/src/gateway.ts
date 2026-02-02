@@ -284,11 +284,13 @@ export class Gateway extends DurableObject<Env> {
       this.clients.set(params.client.id, ws);
       console.log(`[Gateway] Client connected: ${params.client.id}`);
     } else if (mode === "node") {
-      attachments.nodeId = params.client.id;
-      this.nodes.set(params.client.id, ws);
-      this.toolRegistry[params.client.id] = params.tools ?? [];
+      const nodeId = params.client.id;
+      attachments.nodeId = nodeId;
+      this.nodes.set(nodeId, ws);
+      // Store tools with their original names (namespacing happens in getAllTools)
+      this.toolRegistry[nodeId] = params.tools ?? [];
       console.log(
-        `[Gateway] Node connected: ${params.client.id}, tools: [${(params.tools ?? []).map((t) => t.name).join(", ")}]`,
+        `[Gateway] Node connected: ${nodeId}, tools: [${(params.tools ?? []).map((t) => `${nodeId}:${t.name}`).join(", ")}]`,
       );
     } else if (mode === "channel") {
       const channel = params.client.channel;
@@ -554,8 +556,8 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
-    const nodeId = this.findNodeForTool(params.tool);
-    if (!nodeId) {
+    const resolved = this.findNodeForTool(params.tool);
+    if (!resolved) {
       this.sendError(
         ws,
         frame.id,
@@ -565,7 +567,7 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
-    const nodeWs = this.nodes.get(nodeId);
+    const nodeWs = this.nodes.get(resolved.nodeId);
     if (!nodeWs) {
       this.sendError(ws, frame.id, 503, "Node not connected");
       return;
@@ -573,12 +575,13 @@ export class Gateway extends DurableObject<Env> {
 
     this.pendingToolCalls[params.callId] = params.sessionKey;
 
+    // Send the original (un-namespaced) tool name to the node
     const evt: EventFrame<ToolInvokePayload> = {
       type: "evt",
       event: "tool.invoke",
       payload: {
         callId: params.callId,
-        tool: params.tool,
+        tool: resolved.toolName,
         args: params.args ?? {},
       },
     };
@@ -640,8 +643,8 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
-    const nodeId = this.findNodeForTool(params.tool);
-    if (!nodeId) {
+    const resolved = this.findNodeForTool(params.tool);
+    if (!resolved) {
       this.sendError(
         ws,
         frame.id,
@@ -651,7 +654,7 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
-    const nodeWs = this.nodes.get(nodeId);
+    const nodeWs = this.nodes.get(resolved.nodeId);
     if (!nodeWs) {
       this.sendError(ws, frame.id, 503, "Node not connected");
       return;
@@ -660,10 +663,11 @@ export class Gateway extends DurableObject<Env> {
     const callId = crypto.randomUUID();
     this.pendingClientCalls.set(callId, { ws, frameId: frame.id });
 
+    // Send the original (un-namespaced) tool name to the node
     const evt: EventFrame<ToolInvokePayload> = {
       type: "evt",
       event: "tool.invoke",
-      payload: { callId, tool: params.tool, args: params.args ?? {} },
+      payload: { callId, tool: resolved.toolName, args: params.args ?? {} },
     };
     nodeWs.send(JSON.stringify(evt));
   }
@@ -687,12 +691,12 @@ export class Gateway extends DurableObject<Env> {
   async toolRequest(
     params: ToolRequestParams,
   ): Promise<{ ok: boolean; error?: string }> {
-    const nodeId = this.findNodeForTool(params.tool);
-    if (!nodeId) {
+    const resolved = this.findNodeForTool(params.tool);
+    if (!resolved) {
       return { ok: false, error: `No node provides tool: ${params.tool}` };
     }
 
-    const nodeWs = this.nodes.get(nodeId);
+    const nodeWs = this.nodes.get(resolved.nodeId);
     if (!nodeWs) {
       return { ok: false, error: "Node not connected" };
     }
@@ -700,13 +704,13 @@ export class Gateway extends DurableObject<Env> {
     // Track pending call for routing result back
     this.pendingToolCalls[params.callId] = params.sessionKey;
 
-    // Send tool.invoke event to node
+    // Send tool.invoke event to node (with un-namespaced tool name)
     const evt: EventFrame<ToolInvokePayload> = {
       type: "evt",
       event: "tool.invoke",
       payload: {
         callId: params.callId,
-        tool: params.tool,
+        tool: resolved.toolName,
         args: params.args ?? {},
       },
     };
@@ -730,17 +734,36 @@ export class Gateway extends DurableObject<Env> {
     ws.send(JSON.stringify(res));
   }
 
-  findNodeForTool(toolName: string): string | null {
-    for (const nodeId of this.nodes.keys()) {
-      if (
-        this.toolRegistry[nodeId]?.some(
-          (t: ToolDefinition) => t.name === toolName,
-        )
-      ) {
-        return nodeId;
+  /**
+   * Find the node for a namespaced tool name.
+   * Tool names are formatted as "{nodeId}:{toolName}"
+   */
+  findNodeForTool(namespacedTool: string): { nodeId: string; toolName: string } | null {
+    const colonIndex = namespacedTool.indexOf(":");
+    if (colonIndex === -1) {
+      // Legacy: no namespace, search all nodes
+      for (const nodeId of this.nodes.keys()) {
+        if (this.toolRegistry[nodeId]?.some((t: ToolDefinition) => t.name === namespacedTool)) {
+          return { nodeId, toolName: namespacedTool };
+        }
       }
+      return null;
     }
-    return null;
+    
+    const nodeId = namespacedTool.slice(0, colonIndex);
+    const toolName = namespacedTool.slice(colonIndex + 1);
+    
+    // Verify node exists and has this tool
+    if (!this.nodes.has(nodeId)) {
+      return null;
+    }
+    
+    const hasTooled = this.toolRegistry[nodeId]?.some((t: ToolDefinition) => t.name === toolName);
+    if (!hasTooled) {
+      return null;
+    }
+    
+    return { nodeId, toolName };
   }
 
   getAllTools(): ToolDefinition[] {
@@ -751,10 +774,14 @@ export class Gateway extends DurableObject<Env> {
     console.log(
       `[Gateway]   toolRegistry keys: [${Object.keys(this.toolRegistry).join(", ")}]`,
     );
+    // Namespace tools as {nodeId}:{toolName}
     const tools = Array.from(this.nodes.keys()).flatMap(
-      (nodeId) => this.toolRegistry[nodeId] ?? [],
+      (nodeId) => (this.toolRegistry[nodeId] ?? []).map((tool) => ({
+        ...tool,
+        name: `${nodeId}:${tool.name}`,
+      })),
     );
-    console.log(`[Gateway]   returning ${tools.length} tools`);
+    console.log(`[Gateway]   returning ${tools.length} tools: [${tools.map(t => t.name).join(", ")}]`);
     return tools;
   }
 
@@ -1656,10 +1683,23 @@ export class Gateway extends DurableObject<Env> {
       }
     }
 
-    if (payload.state === "final" && payload.message) {
+    // Handle final state: route to channel and stop typing indicator
+    if (payload.state === "final" || payload.state === "error") {
       const channelContext = this.pendingChannelResponses[sessionKey];
       if (channelContext) {
-        this.routeToChannel(sessionKey, channelContext, payload);
+        // Stop typing indicator
+        this.sendTypingToChannel(
+          channelContext.channel,
+          channelContext.accountId,
+          channelContext.peer,
+          sessionKey,
+          false, // typing = false
+        );
+
+        // Route the response to the channel
+        if (payload.state === "final" && payload.message) {
+          this.routeToChannel(sessionKey, channelContext, payload);
+        }
         delete this.pendingChannelResponses[sessionKey];
       } else {
         console.log(`[Gateway] No pending channel context for session ${sessionKey}`);

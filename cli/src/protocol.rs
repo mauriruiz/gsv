@@ -109,28 +109,3 @@ impl RequestFrame {
         }
     }
 }
-
-impl ResponseFrame {
-    pub fn ok(id: &str, payload: Option<Value>) -> Self {
-        Self {
-            id: id.to_string(),
-            ok: true,
-            payload,
-            error: None,
-        }
-    }
-
-    pub fn err(id: &str, code: i32, message: &str) -> Self {
-        Self {
-            id: id.to_string(),
-            ok: false,
-            payload: None,
-            error: Some(ErrorShape {
-                code,
-                message: message.to_string(),
-                details: None,
-                retryable: None,
-            }),
-        }
-    }
-}

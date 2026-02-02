@@ -21,17 +21,6 @@ pub trait Tool: Send + Sync {
     fn execute(&self, args: Value) -> Result<Value, String>;
 }
 
-/// Get the default workspace path (~/.gsv or GSV_WORKSPACE env)
-pub fn default_workspace() -> PathBuf {
-    if let Ok(path) = std::env::var("GSV_WORKSPACE") {
-        return PathBuf::from(path);
-    }
-
-    dirs::home_dir()
-        .map(|h| h.join("gsv"))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
 /// Create all tools with the given workspace
 pub fn all_tools_with_workspace(workspace: PathBuf) -> Vec<Box<dyn Tool>> {
     vec![
@@ -42,9 +31,4 @@ pub fn all_tools_with_workspace(workspace: PathBuf) -> Vec<Box<dyn Tool>> {
         Box::new(GlobTool::new(workspace.clone())),
         Box::new(GrepTool::new(workspace)),
     ]
-}
-
-/// Create all tools with the default workspace
-pub fn all_tools() -> Vec<Box<dyn Tool>> {
-    all_tools_with_workspace(default_workspace())
 }

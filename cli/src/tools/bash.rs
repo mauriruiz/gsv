@@ -29,6 +29,7 @@ struct BashArgs {
     command: String,
     #[serde(default)]
     workdir: Option<String>,
+    #[allow(dead_code)] // TODO: implement timeout
     #[serde(default)]
     timeout: Option<u64>,
 }
