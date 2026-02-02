@@ -2,3 +2,12 @@ node_modules/
 .dev.vars
 target/
 .wrangler/
+
+# Build artifacts
+dist/
+*.lock
+bun.lock
+package-lock.json
+
+# Alchemy state
+.alchemy/

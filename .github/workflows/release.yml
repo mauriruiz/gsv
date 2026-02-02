@@ -6,46 +6,44 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version tag (e.g., v0.1.0)'
-        required: false
+      tag:
+        description: 'Release tag (e.g., v0.1.0)'
+        required: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+  # Build CLI binaries for multiple platforms
+  build-cli:
     strategy:
-      fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon)
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            name: gsv-darwin-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: gsv-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: gsv-linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: gsv-darwin-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: gsv-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: gsv-windows-x64.exe
 
-          # macOS x86_64 (Intel)
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: gsv-darwin-x64
-
-          # Linux x86_64 (glibc)
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: gsv-linux-x64
-
-          # Linux ARM64 (glibc)
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: gsv-linux-arm64
-
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -55,23 +53,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build
+      - name: Build CLI
         working-directory: cli
+        run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: |
-          cargo build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/gsv ../${{ matrix.name }}
 
-      - name: Upload artifact
+      - name: Rename binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mv cli/target/${{ matrix.target }}/release/gsv cli/target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mv cli/target/${{ matrix.target }}/release/gsv.exe cli/target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      - name: Upload CLI binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.name }}
+          name: ${{ matrix.artifact }}
+          path: cli/target/${{ matrix.target }}/release/${{ matrix.artifact }}
 
+  # Create GitHub Release with all artifacts
   release:
-    name: Create Release
-    needs: build
+    needs: [build-cli]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,68 +87,67 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare release files
+      - name: Prepare release assets
         run: |
           mkdir -p release
-          for dir in artifacts/*/; do
-            name=$(basename "$dir")
-            cp "$dir/$name" "release/$name"
-            chmod +x "release/$name"
-            # Create tarball
-            tar -czvf "release/${name}.tar.gz" -C release "$name"
-            rm "release/$name"
-          done
-          ls -la release/
+          
+          # CLI binaries
+          cp artifacts/gsv-linux-x64/gsv-linux-x64 release/
+          cp artifacts/gsv-linux-arm64/gsv-linux-arm64 release/
+          cp artifacts/gsv-darwin-x64/gsv-darwin-x64 release/
+          cp artifacts/gsv-darwin-arm64/gsv-darwin-arm64 release/
+          cp artifacts/gsv-windows-x64.exe/gsv-windows-x64.exe release/
+          
+          # Make binaries executable
+          chmod +x release/gsv-*
+          
+          # Include install script
+          cp install.sh release/
+          
+          # Create checksums
+          cd release && sha256sum * > checksums.txt
 
-      - name: Create checksums
+      - name: Get tag name
+        id: tag
         run: |
-          cd release
-          sha256sum *.tar.gz > checksums.txt
-          cat checksums.txt
-
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: GSV ${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: GSV ${{ steps.tag.outputs.tag }}
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          files: |
-            release/*.tar.gz
-            release/checksums.txt
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          generate_release_notes: true
           body: |
-            ## GSV CLI ${{ steps.version.outputs.version }}
-            
-            ### Installation
+            ## Installation
             
             ```bash
-            # Quick install (auto-detects OS/arch)
             curl -sSL https://raw.githubusercontent.com/deathbyknowledge/gsv/main/install.sh | sh
-            
-            # Or manual download
-            # macOS ARM64 (Apple Silicon)
-            curl -LO https://github.com/deathbyknowledge/gsv/releases/download/${{ steps.version.outputs.version }}/gsv-darwin-arm64.tar.gz
-            
-            # macOS x64 (Intel)
-            curl -LO https://github.com/deathbyknowledge/gsv/releases/download/${{ steps.version.outputs.version }}/gsv-darwin-x64.tar.gz
-            
-            # Linux x64
-            curl -LO https://github.com/deathbyknowledge/gsv/releases/download/${{ steps.version.outputs.version }}/gsv-linux-x64.tar.gz
-            
-            # Linux ARM64
-            curl -LO https://github.com/deathbyknowledge/gsv/releases/download/${{ steps.version.outputs.version }}/gsv-linux-arm64.tar.gz
             ```
             
-            ### Verify checksums
-            ```bash
-            sha256sum -c checksums.txt
-            ```
+            This will:
+            - Download and install the CLI binary
+            - Optionally deploy GSV to Cloudflare (requires [bun](https://bun.sh))
+            
+            ## Manual Installation
+            
+            Download the appropriate binary for your platform:
+            - **macOS (Apple Silicon)**: `gsv-darwin-arm64`
+            - **macOS (Intel)**: `gsv-darwin-x64`
+            - **Linux (x64)**: `gsv-linux-x64`
+            - **Linux (ARM64)**: `gsv-linux-arm64`
+            - **Windows**: `gsv-windows-x64.exe`
+          files: |
+            release/gsv-linux-x64
+            release/gsv-linux-arm64
+            release/gsv-darwin-x64
+            release/gsv-darwin-arm64
+            release/gsv-windows-x64.exe
+            release/install.sh
+            release/checksums.txt

@@ -45,11 +45,9 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
         sqlite: true,
       }),
       STORAGE: storage,
-      // AI binding for transcription (Workers AI)
-      // Note: This uses your Cloudflare account's AI
     },
     url,
-    compatibilityDate: "2025-02-11",
+    compatibilityDate: "2026-01-28",
     compatibilityFlags: ["nodejs_compat"],
     bundle: {
       format: "esm",

@@ -501,46 +501,66 @@ gsv cron disable <id>
 
 ### Installation & Distribution
 
-#### 27. Installation Wizard
-**Priority:** HIGH - Required for sharing with others
+#### 27. Installation & Deployment ✅ DONE
+**Status:** Implemented via `install.sh` + Alchemy
 
-Create a smooth onboarding experience:
+Single command to install CLI and optionally deploy:
 
 ```bash
-# Option A: Install CLI, wizard deploys everything
-curl -sSL https://gsv.dev/install.sh | sh
-gsv init
-
-# Option B: One-click deploy to Cloudflare
-# Deploy button that forks and deploys
+curl -sSL https://raw.githubusercontent.com/deathbyknowledge/gsv/main/install.sh | sh
 ```
 
-**Wizard steps:**
-1. Check prerequisites (Cloudflare account, wrangler auth)
-2. Create R2 bucket
-3. Deploy gateway worker
-4. Deploy WhatsApp channel (optional)
-5. Set secrets (LLM API key, auth token)
-6. Generate initial config
-7. Show connection instructions
+**What install.sh does:**
+1. Asks if you have an existing deployment
+2. If NO (new deployment):
+   - Clones GSV repo to `~/.gsv/src`
+   - Runs `bunx alchemy deploy` (handles bundling, DO migrations, R2)
+   - Uses OAuth for Cloudflare auth (no API token paste needed)
+3. Downloads CLI binary for your platform
+4. Configures CLI with gateway URL
 
-#### 28. CLI Binary Distribution
-**Priority:** HIGH
+**Why Alchemy instead of direct API:**
+- Handles bundling correctly (node compat, DO migrations)
+- Tracks deployment state
+- OAuth authentication
+- Much simpler than reimplementing wrangler in Rust
 
-Options:
-- GitHub Releases (current) - manual download
-- `cargo install gsv` - Rust users
-- Homebrew tap - macOS users
-- curl installer script - universal
-- npm wrapper package - Node users
+**Architecture decision:** CLI focuses on runtime operations (chat, config, sessions). 
+Deployment is handled by alchemy in the install script, keeping concerns separated.
+
+**Requirements for deployment:**
+- [bun](https://bun.sh) - for running alchemy
+- Cloudflare account (free tier works)
+
+**Files:**
+- `install.sh` - Combined installer + deployment script
+- `gateway/alchemy/` - Alchemy infra definitions
+- `.github/workflows/release.yml` - CLI binary builds
+
+#### 28. CLI Binary Distribution ✅ DONE
+**Status:** Implemented
+
+Distribution methods:
+- ✅ GitHub Releases - automated via workflow
+- ✅ curl installer script (`install.sh`)
+- [ ] `cargo install gsv` - needs crates.io publish
+- [ ] Homebrew tap - future
+
+**GitHub Actions workflow builds:**
+- Linux x64 + ARM64
+- macOS x64 + ARM64 (Apple Silicon)
+- Windows x64
 
 #### 29. Update Mechanism
 **Priority:** Medium
 
 How to update:
-- CLI: `gsv update` or re-run installer
-- Gateway: `gsv deploy` or GitHub Actions
-- Config: synced via CLI
+- CLI: Re-run `install.sh` (detects existing config, offers reinstall)
+- Gateway: `cd ~/.gsv/src/gateway && bunx alchemy deploy alchemy/deploy.ts`
+- Config: `gsv local-config set ...`
+
+Future:
+- [ ] `gsv update` - self-update CLI binary
 
 ---
 
@@ -604,9 +624,9 @@ How to update:
 7. [x] **Message queue** - Prevent race conditions
 8. [x] **Typing indicators** - Show "typing..." in WhatsApp
 
-### Next Up - Installation & Polish
-9. [ ] **Installation wizard** (`gsv init`) - Deploy gateway + configure secrets
-10. [ ] **CLI binary distribution** - curl installer, GitHub releases
+### Next Up - Installation & Polish (IN PROGRESS)
+9. [x] **Installation wizard** (`gsv setup`) - Deploy gateway + configure secrets
+10. [x] **CLI binary distribution** - curl installer, GitHub Actions release workflow
 11. [ ] **Typing stop event** - Send `typing=false` when done
 12. [ ] **PDF/document support** - Text extraction + image fallback
 
