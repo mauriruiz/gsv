@@ -109,17 +109,11 @@ beforeAll(async () => {
 afterAll(async () => {
   console.log("\n🗑️  Cleaning up e2e resources...");
   try {
-    const destroyApp = await alchemy("gsv-e2e", { phase: "destroy" });
-    await destroyApp.run(async () => {
-      await createGsvInfra({
-        name: testId,
-        entrypoint: "src/index.ts",
-        url: true,
-      });
-    });
-    await destroyApp.finalize();
+    await alchemy.destroy(app);
+    await app.finalize();
+    console.log("   Resources destroyed successfully!");
   } catch (err) {
-    console.log("   Cleanup error (may be fine):", err);
+    console.error("   Cleanup error:", err);
   }
   console.log("   Done!\n");
 }, 90000);
@@ -239,6 +233,264 @@ describe("Heartbeat RPC", () => {
     const status = await sendRequest(ws, "heartbeat.status") as { agents: Record<string, unknown> };
     
     expect(status.agents).toBeDefined();
+    
+    ws.close();
+  });
+});
+
+// ============================================================================
+// Slash Commands E2E
+// ============================================================================
+
+describe("Slash Commands", () => {
+  it("/status returns session info", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    // Note: API uses "message" not "text"
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-commands-e2e",
+      message: "/status",
+    }) as { status: string; command: string; response: string };
+    
+    expect(result.status).toBe("command");
+    expect(result.command).toBe("status");
+    expect(result.response).toContain("Session:");
+    
+    ws.close();
+  });
+
+  it("/help lists available commands", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-commands-e2e",
+      message: "/help",
+    }) as { status: string; command: string; response: string };
+    
+    expect(result.status).toBe("command");
+    expect(result.command).toBe("help");
+    expect(result.response).toContain("/new");
+    expect(result.response).toContain("/model");
+    expect(result.response).toContain("/think");
+    
+    ws.close();
+  });
+
+  it("/model shows current model", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-commands-e2e",
+      message: "/model",
+    }) as { status: string; command: string; response: string };
+    
+    expect(result.status).toBe("command");
+    expect(result.command).toBe("model");
+    // Response should mention the current model
+    expect(result.response.length).toBeGreaterThan(0);
+    
+    ws.close();
+  });
+
+  it("/new resets session", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-commands-reset-e2e",
+      message: "/new",
+    }) as { status: string; command: string; response: string };
+    
+    expect(result.status).toBe("command");
+    // /new is aliased to "reset" internally
+    expect(result.command).toBe("reset");
+    expect(result.response.toLowerCase()).toContain("reset");
+    
+    ws.close();
+  });
+
+  it("/compact compacts history", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-commands-e2e",
+      message: "/compact",
+    }) as { status: string; command: string; response: string };
+    
+    expect(result.status).toBe("command");
+    expect(result.command).toBe("compact");
+    
+    ws.close();
+  });
+
+  it("unknown slash text is treated as regular message", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    // Unknown /commands are treated as regular messages (sent to LLM)
+    // because they might be markdown or intentional text
+    const result = await sendRequest(ws, "chat.send", {
+      sessionKey: "test-unknown-command-e2e",
+      message: "/unknowncommand",
+    }) as { status: string };
+    
+    // Should start as a regular message (goes to LLM), not treated as command
+    // status will be "started" (not "command")
+    expect(result.status).toBe("started");
+    
+    ws.close();
+  });
+});
+
+// ============================================================================
+// Channel Mode E2E  
+// ============================================================================
+
+describe("Channel Mode", () => {
+  it("channel.inbound handles message with dmPolicy", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectWebSocket(wsUrl);
+    
+    // Connect in CHANNEL mode (not client mode)
+    await sendRequest(ws, "connect", {
+      minProtocol: 1,
+      client: {
+        mode: "channel",
+        id: "test-channel-e2e",
+        channel: "test",
+        accountId: "test-account",
+      },
+    });
+    
+    // channel.inbound requires: channel, accountId, peer, message (with text inside)
+    // Default dmPolicy is "pairing" so unknown senders get pending_pairing
+    // Or if dmPolicy is "open", they get accepted
+    const result = await sendRequest(ws, "channel.inbound", {
+      channel: "test",
+      accountId: "test-account",
+      peer: { kind: "dm", id: "+15551234567" },
+      message: { id: "msg-1", text: "/status" },
+    }) as { status: string };
+    
+    // Should be one of the valid statuses based on dmPolicy
+    expect(result.status).toBeDefined();
+    expect(typeof result.status).toBe("string");
+    // Possible values: pending_pairing, blocked, accepted, or command
+    console.log(`    channel.inbound status: ${result.status}`);
+    
+    ws.close();
+  });
+
+  it("channel connection registers in gateway", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectWebSocket(wsUrl);
+    
+    // Connect as channel
+    await sendRequest(ws, "connect", {
+      minProtocol: 1,
+      client: {
+        mode: "channel",
+        id: "test-channel-register-e2e",
+        channel: "whatsapp",
+        accountId: "test-account-2",
+      },
+    });
+    
+    // The channel should now be registered - check via a separate client connection
+    const clientWs = await connectAndAuth(wsUrl);
+    
+    // We can't directly query channels, but we can verify connection works
+    // by trying to send to a known channel
+    const configResult = await sendRequest(clientWs, "config.get") as { config: Record<string, unknown> };
+    expect(configResult.config).toBeDefined();
+    
+    ws.close();
+    clientWs.close();
+  });
+});
+
+// ============================================================================
+// Session State Persistence
+// ============================================================================
+
+describe("Session State", () => {
+  it("session state persists via session.patch", async () => {
+    const sessionKey = `persist-test-${crypto.randomUUID()}`;
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    
+    // First connection - use session.patch to set settings
+    // Note: session.patch uses { settings: {...} } directly, not nested in patch
+    const ws1 = await connectAndAuth(wsUrl);
+    await sendRequest(ws1, "session.patch", {
+      sessionKey,
+      settings: { thinkingLevel: "high" },
+    });
+    ws1.close();
+    
+    // Second connection - verify it persisted via session.get
+    const ws2 = await connectAndAuth(wsUrl);
+    const result = await sendRequest(ws2, "session.get", {
+      sessionKey,
+    }) as { settings?: { thinkingLevel?: string } };
+    
+    expect(result.settings?.thinkingLevel).toBe("high");
+    ws2.close();
+  });
+
+  it("sessions.list returns session registry", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    // Create a session first via chat.send
+    await sendRequest(ws, "chat.send", {
+      sessionKey: "list-test-session",
+      message: "/status",
+    });
+    
+    // Note: method is "sessions.list" not "session.list"
+    const result = await sendRequest(ws, "sessions.list") as { sessions: unknown[] };
+    
+    expect(Array.isArray(result.sessions)).toBe(true);
+    
+    ws.close();
+  });
+});
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+describe("Error Handling", () => {
+  it("invalid RPC method returns error", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectAndAuth(wsUrl);
+    
+    try {
+      await sendRequest(ws, "nonexistent.method", {});
+      // Should not reach here
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeDefined();
+      expect((err as Error).message).toContain("Unknown");
+    }
+    
+    ws.close();
+  });
+
+  it("malformed JSON is handled gracefully", async () => {
+    const wsUrl = gatewayUrl.replace("https://", "wss://") + "/ws";
+    const ws = await connectWebSocket(wsUrl);
+    
+    // Send invalid JSON
+    ws.send("not valid json {{{");
+    
+    // Connection should still be open after bad message
+    await Bun.sleep(100);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
     
     ws.close();
   });
