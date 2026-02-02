@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gateway-test:
+    name: Gateway Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gateway/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: gateway
+        run: npm ci
+      
+      - name: Type check
+        working-directory: gateway
+        run: npx tsc --noEmit
+      
+      - name: Run unit tests
+        working-directory: gateway
+        run: npm test
+
+  cli-build:
+    name: CLI Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Build
+        working-directory: cli
+        run: cargo build --release
+      
+      - name: Run tests
+        working-directory: cli
+        run: cargo test
+
+  cli-fmt:
+    name: CLI Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt
+      
+      - name: Check formatting
+        working-directory: cli
+        run: cargo fmt --check
