@@ -1398,8 +1398,8 @@ export class Gateway extends DurableObject<Env> {
     switch (channel) {
       case "whatsapp":
         return (this.env as any).CHANNEL_WHATSAPP as Fetcher & ChannelWorkerInterface;
-      // case "discord":
-      //   return (this.env as any).CHANNEL_DISCORD;
+      case "discord":
+        return (this.env as any).CHANNEL_DISCORD as Fetcher & ChannelWorkerInterface;
       default:
         return undefined;
     }
