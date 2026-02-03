@@ -63,6 +63,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
 
   // Use WorkerStub for circular service binding dependencies
   // Gateway references WhatsApp, WhatsApp references Gateway
+  // Note: gatewayStub needs to point to GatewayEntrypoint for RPC methods
   const gatewayStub = await WorkerStub(`${name}-gateway-stub`, { name });
   const whatsappStub = withWhatsApp
     ? await WorkerStub(`${name}-whatsapp-stub`, { name: `${name}-channel-whatsapp` })
@@ -106,7 +107,12 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
           className: "WhatsAppAccount",
           sqlite: true,
         }),
-        GATEWAY: gatewayStub,
+        // Service binding to Gateway's GatewayEntrypoint for RPC
+        GATEWAY: {
+          type: "service" as const,
+          service: name,
+          __entrypoint__: "GatewayEntrypoint",
+        },
         // WhatsApp channel uses same auth token
         ...(secrets.authToken ? { AUTH_TOKEN: alchemy.secret(secrets.authToken) } : {}),
       },
