@@ -55,7 +55,7 @@ export type ChannelId =
   | "googlechat"
   | (string & {});
 
-export type ChatType = "dm" | "group";
+export type ChatType = "dm" | "group" | "channel" | "thread";
 
 export type PeerInfo = {
   kind: ChatType;

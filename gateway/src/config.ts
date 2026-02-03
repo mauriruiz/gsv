@@ -316,7 +316,7 @@ export function resolveAgentIdFromBinding(
   config: GsvConfig,
   channel: string,
   accountId?: string,
-  peer?: { kind: "dm" | "group"; id: string },
+  peer?: { kind: string; id: string },
 ): string {
   const bindings = config.agents?.bindings ?? [];
   

@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gsv-channel-discord",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DISCORD_GATEWAY",
+        "class_name": "DiscordGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DiscordGateway"]
+    }
+  ],
+  "services": [
+    {
+      "binding": "GATEWAY",
+      "service": "gsv-gateway",
+      "entrypoint": "GatewayEntrypoint"
+    }
+  ]
+}

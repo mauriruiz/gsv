@@ -2090,4 +2090,196 @@ export class Gateway extends DurableObject<Env> {
     
     return result;
   }
+
+  // ─────────────────────────────────────────────────────────
+  // RPC Methods (called by GatewayEntrypoint via Service Binding)
+  // ─────────────────────────────────────────────────────────
+
+  /**
+   * Handle inbound message from channel via RPC (Service Binding).
+   * This is the same logic as handleChannelInbound but without WebSocket response.
+   */
+  async handleChannelInboundRpc(params: ChannelInboundParams): Promise<{
+    ok: boolean;
+    sessionKey?: string;
+    status?: string;
+    error?: string;
+  }> {
+    if (!params?.channel || !params?.accountId || !params?.peer || !params?.message) {
+      return { ok: false, error: "channel, accountId, peer, and message required" };
+    }
+
+    const config = await this.getConfig();
+
+    // Check allowlist
+    const senderId = params.sender?.id ?? params.peer.id;
+    const senderName = params.sender?.name ?? params.peer.name;
+    const allowCheck = isAllowedSender(config, params.channel, senderId, params.peer.id);
+    
+    if (!allowCheck.allowed) {
+      if (allowCheck.needsPairing) {
+        const pairKey = `${params.channel}:${normalizeE164(senderId)}`;
+        if (!this.pendingPairs[pairKey]) {
+          this.pendingPairs[pairKey] = {
+            channel: params.channel,
+            senderId: normalizeE164(senderId),
+            senderName: senderName,
+            requestedAt: Date.now(),
+            firstMessage: params.message.text?.slice(0, 200),
+          };
+          console.log(`[Gateway] New pairing request from ${senderId} (${senderName})`);
+        }
+        return { ok: true, status: "pending_pairing" };
+      }
+      
+      console.log(`[Gateway] Blocked message from ${senderId}: ${allowCheck.reason}`);
+      return { ok: true, status: "blocked" };
+    }
+
+    // Build session key
+    const agentId = resolveAgentIdFromBinding(config, params.channel, params.accountId, params.peer);
+    const sessionKey = this.buildSessionKeyFromChannel(agentId, params.channel, params.peer, senderId);
+
+    // Update channel registry
+    const channelKey = `${params.channel}:${params.accountId}`;
+    const existing = this.channelRegistry[channelKey];
+    if (existing) {
+      this.channelRegistry[channelKey] = { ...existing, lastMessageAt: Date.now() };
+    }
+
+    const messageText = params.message.text;
+
+    // Check for slash commands
+    const command = parseCommand(messageText);
+    if (command) {
+      const commandResult = await this.handleSlashCommand(
+        command,
+        sessionKey,
+        params.channel,
+        params.accountId,
+        params.peer,
+        params.message.id,
+      );
+      
+      if (commandResult.handled) {
+        // Send response via channel outbound
+        this.sendChannelResponse(
+          params.channel,
+          params.accountId,
+          params.peer,
+          params.message.id,
+          commandResult.response || commandResult.error || "Command executed",
+        );
+        return { ok: true, sessionKey, status: "command" };
+      }
+    }
+
+    // Parse directives
+    const directives = parseDirectives(messageText);
+    
+    if (isDirectiveOnly(messageText)) {
+      const ack = formatDirectiveAck(directives);
+      if (ack) {
+        this.sendChannelResponse(params.channel, params.accountId, params.peer, params.message.id, ack);
+      }
+      return { ok: true, sessionKey, status: "directive-only" };
+    }
+
+    // Update session registry
+    const now = Date.now();
+    const existingSession = this.sessionRegistry[sessionKey];
+    this.sessionRegistry[sessionKey] = {
+      sessionKey,
+      createdAt: existingSession?.createdAt ?? now,
+      lastActiveAt: now,
+      label: existingSession?.label ?? params.peer.name,
+    };
+
+    const sessionStub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionKey));
+
+    try {
+      const runId = crypto.randomUUID();
+      const messageOverrides: { thinkLevel?: string; model?: { provider: string; id: string } } = {};
+      if (directives.thinkLevel) messageOverrides.thinkLevel = directives.thinkLevel;
+      if (directives.model) messageOverrides.model = directives.model;
+
+      // Process media
+      const fullConfig = this.getFullConfig();
+      let processedMedia = await processMediaWithTranscription(
+        params.message.media,
+        {
+          workersAi: this.env.AI,
+          openaiApiKey: fullConfig.apiKeys.openai,
+          preferredProvider: fullConfig.transcription?.provider,
+        },
+      );
+      
+      if (processedMedia.length > 0) {
+        processedMedia = await processInboundMedia(processedMedia, this.env.STORAGE, sessionKey);
+      }
+
+      // Store channel context
+      this.pendingChannelResponses[sessionKey] = {
+        channel: params.channel,
+        accountId: params.accountId,
+        peer: params.peer,
+        inboundMessageId: params.message.id,
+      };
+
+      // Update last active context
+      this.lastActiveContext[agentId] = {
+        agentId,
+        channel: params.channel,
+        accountId: params.accountId,
+        peer: params.peer,
+        sessionKey,
+        timestamp: Date.now(),
+      };
+
+      // Send typing indicator
+      this.sendTypingToChannel(params.channel, params.accountId, params.peer, sessionKey, true);
+
+      await sessionStub.chatSend(
+        directives.cleaned,
+        runId,
+        JSON.parse(JSON.stringify(this.getAllTools())),
+        sessionKey,
+        messageOverrides,
+        processedMedia.length > 0 ? processedMedia : undefined,
+      );
+
+      return { ok: true, sessionKey, status: "started" };
+    } catch (e) {
+      this.sendTypingToChannel(params.channel, params.accountId, params.peer, sessionKey, false);
+      delete this.pendingChannelResponses[sessionKey];
+      return { ok: false, sessionKey, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Handle channel status change notification via RPC.
+   */
+  async handleChannelStatusChanged(
+    channelId: string,
+    accountId: string,
+    status: { connected: boolean; authenticated: boolean; error?: string },
+  ): Promise<void> {
+    const channelKey = `${channelId}:${accountId}`;
+    console.log(`[Gateway] Channel status changed: ${channelKey} connected=${status.connected}`);
+    
+    // Update channel registry
+    const existing = this.channelRegistry[channelKey];
+    if (existing) {
+      this.channelRegistry[channelKey] = {
+        ...existing,
+        connectedAt: status.connected ? Date.now() : existing.connectedAt,
+      };
+    } else if (status.connected) {
+      this.channelRegistry[channelKey] = {
+        channel: channelId as ChannelId,
+        accountId,
+        connectedAt: Date.now(),
+      };
+    }
+  }
 }
