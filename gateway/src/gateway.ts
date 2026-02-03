@@ -513,7 +513,7 @@ export class Gateway extends DurableObject<Env> {
             const info = await sessionStub.get();
             return {
               handled: true,
-              response: `Thinking level: ${info.settings.thinkingLevel || "default"}\nLevels: off, low, medium, high`,
+              response: `Thinking level: ${info.settings.thinkingLevel || "off"}\nLevels: off, minimal, low, medium, high, xhigh`,
             };
           }
           
@@ -521,7 +521,7 @@ export class Gateway extends DurableObject<Env> {
           if (!level) {
             return {
               handled: true,
-              error: `Invalid level: ${command.args}\nLevels: off, low, medium, high`,
+              error: `Invalid level: ${command.args}\nLevels: off, minimal, low, medium, high, xhigh`,
             };
           }
           
@@ -1326,7 +1326,7 @@ export class Gateway extends DurableObject<Env> {
             const info = await sessionStub.get();
             return {
               handled: true,
-              response: `Thinking level: ${info.settings.thinkingLevel || "default"}\n\nLevels: off, low, medium, high`,
+              response: `Thinking level: ${info.settings.thinkingLevel || "off"}\n\nLevels: off, minimal, low, medium, high, xhigh`,
             };
           }
           
@@ -1334,7 +1334,7 @@ export class Gateway extends DurableObject<Env> {
           if (!level) {
             return {
               handled: true,
-              error: `Invalid level: ${command.args}\n\nLevels: off, low, medium, high`,
+              error: `Invalid level: ${command.args}\n\nLevels: off, minimal, low, medium, high, xhigh`,
             };
           }
           

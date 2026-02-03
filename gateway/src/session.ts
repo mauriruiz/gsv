@@ -55,7 +55,7 @@ type ToolResultInput = {
 
 export type SessionSettings = {
   model?: { provider: string; id: string };
-  thinkingLevel?: "none" | "low" | "medium" | "high";
+  thinkingLevel?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   systemPrompt?: string;
   maxTokens?: number;
 };
@@ -875,9 +875,10 @@ export class Session extends DurableObject<Env> {
     const effectiveThinkLevel =
       this.currentMessageOverrides.thinkLevel || sessionSettings.thinkingLevel;
 
+    // Map to pi-ai reasoning levels: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
     const reasoningLevel =
       effectiveThinkLevel && effectiveThinkLevel !== "none"
-        ? (effectiveThinkLevel as "low" | "medium" | "high")
+        ? (effectiveThinkLevel as "minimal" | "low" | "medium" | "high" | "xhigh")
         : undefined;
 
     console.log(

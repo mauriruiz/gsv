@@ -104,13 +104,18 @@ export const HELP_TEXT = `**Available Commands**
 
 **Settings:**
 • \`/model [name]\` - Show or set model
-• \`/think [level]\` - Set thinking (off/low/medium/high)
+• \`/think [level]\` - Set reasoning level (off, minimal, low, medium, high, xhigh)
+
+**Inline Directives:**
+• \`/t:high message\` - Use high reasoning for this message only
+• \`/m:opus message\` - Use specific model for this message only
 
 **Info:**
 • \`/help\` - Show this message`;
 
 // Thinking level normalization
-export type ThinkLevel = "none" | "low" | "medium" | "high";
+// Maps to pi-ai reasoning levels: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type ThinkLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export function normalizeThinkLevel(raw?: string): ThinkLevel | undefined {
   if (!raw) return undefined;
@@ -121,16 +126,24 @@ export function normalizeThinkLevel(raw?: string): ThinkLevel | undefined {
     case "none":
     case "0":
       return "none";
-    case "low":
+    case "minimal":
+    case "min":
     case "1":
+      return "minimal";
+    case "low":
+    case "2":
       return "low";
     case "medium":
     case "med":
-    case "2":
+    case "3":
       return "medium";
     case "high":
-    case "3":
+    case "4":
       return "high";
+    case "xhigh":
+    case "max":
+    case "5":
+      return "xhigh";
     default:
       return undefined;
   }
