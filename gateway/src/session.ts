@@ -45,6 +45,7 @@ type ChatSendResult = {
   runId: string;
   queued?: boolean;
   queuePosition?: number;
+  started?: boolean;
 };
 
 type ToolResultInput = {
@@ -83,6 +84,17 @@ export type QueuedMessage = {
     model?: { provider: string; id: string };
   };
   queuedAt: number;
+};
+
+// Current run state (persisted so it survives hibernation)
+export type CurrentRun = {
+  runId: string;
+  tools: ToolDefinition[];
+  messageOverrides?: {
+    thinkLevel?: string;
+    model?: { provider: string; id: string };
+  };
+  startedAt: number;
 };
 
 // State stored in PersistedObject (small, no messages)
@@ -228,6 +240,20 @@ export class Session extends DurableObject<Env> {
     { prefix: "pendingToolCalls:" },
   );
 
+  // Current run state (persisted for hibernation)
+  private _currentRun = PersistedObject<{ run: CurrentRun | null }>(
+    this.ctx.storage.kv,
+    { prefix: "currentRun:", defaults: { run: null } },
+  );
+
+  private get currentRun(): CurrentRun | null {
+    return this._currentRun.run;
+  }
+
+  private set currentRun(run: CurrentRun | null) {
+    this._currentRun.run = run;
+  }
+
   // Message queue for sequential processing (wrapped in object for PersistedObject)
   private _messageQueue = PersistedObject<{ items: QueuedMessage[] }>(
     this.ctx.storage.kv,
@@ -242,16 +268,6 @@ export class Session extends DurableObject<Env> {
   private set messageQueue(items: QueuedMessage[]) {
     this._messageQueue.items = items;
   }
-
-  // Processing state (not persisted - if we crash mid-processing, queue will retry)
-  private isProcessing = false;
-
-  currentRunId: string | null = null;
-  currentTools: ToolDefinition[] = [];
-  currentMessageOverrides: {
-    thinkLevel?: string;
-    model?: { provider: string; id: string };
-  } = {};
 
   // In-memory cache for fetched media
   private mediaCache = new MediaCache();
@@ -445,6 +461,13 @@ export class Session extends DurableObject<Env> {
   // ---- Main API ----
 
   /**
+   * Check if currently processing a run
+   */
+  private get isProcessing(): boolean {
+    return this.currentRun !== null;
+  }
+
+  /**
    * Send a message to the agent.
    * If another message is being processed, this will be queued.
    */
@@ -481,16 +504,17 @@ export class Session extends DurableObject<Env> {
       return { ok: true, runId, queued: true, queuePosition: this.messageQueue.length };
     }
 
-    // Not processing - start processing this message
-    await this.processMessage(message, runId, tools, messageOverrides, media);
+    // Start processing this message (async - don't await!)
+    this.startRun(message, runId, tools, messageOverrides, media);
     
-    return { ok: true, runId };
+    return { ok: true, runId, started: true };
   }
 
   /**
-   * Process a single message and then check the queue for more
+   * Start processing a message. Does NOT block the caller.
+   * Uses ctx.waitUntil() to keep the DO alive during async processing.
    */
-  private async processMessage(
+  private startRun(
     message: string,
     runId: string,
     tools: ToolDefinition[],
@@ -499,37 +523,164 @@ export class Session extends DurableObject<Env> {
       model?: { provider: string; id: string };
     },
     media?: MediaAttachment[],
-  ): Promise<void> {
-    this.isProcessing = true;
-    this.currentRunId = runId;
-    this.currentTools = tools;
-    this.currentMessageOverrides = messageOverrides ?? {};
+  ): void {
+    // Set current run state (persisted)
+    this.currentRun = {
+      runId,
+      tools,
+      messageOverrides,
+      startedAt: Date.now(),
+    };
 
+    console.log(`[Session] Starting run ${runId}`);
+
+    // Build and store user message synchronously
+    const userMessage = this.buildUserMessage(message, media);
+    this.addMessage(userMessage);
+    this.meta.updatedAt = Date.now();
+
+    // Kick off the agent loop asynchronously
+    // ctx.waitUntil() keeps the DO alive but doesn't block the RPC response
+    this.ctx.waitUntil(this.runAgentLoop());
+  }
+
+  /**
+   * The main agent loop. Runs asynchronously after chatSend returns.
+   * Calls LLM, handles tool calls, broadcasts results.
+   */
+  private async runAgentLoop(): Promise<void> {
     try {
+      // Check for auto-reset
       if (this.shouldAutoReset()) {
         console.log(`[Session] Auto-reset triggered for ${this.meta.sessionKey}`);
         await this.doReset();
       }
 
-      // Build and store user message
-      const userMessage = this.buildUserMessage(message, media);
-      this.addMessage(userMessage);
-      this.meta.updatedAt = Date.now();
-
       await this.continueAgentLoop();
-    } finally {
-      this.isProcessing = false;
-      
-      // Process next queued message if any
-      await this.processNextQueued();
+    } catch (e) {
+      console.error(`[Session] Agent loop error:`, e);
+      await this.broadcastToClients({
+        runId: this.currentRun?.runId ?? null,
+        sessionKey: this.meta.sessionKey,
+        state: "error",
+        error: e instanceof Error ? e.message : String(e),
+      });
+      this.finishRun();
     }
   }
 
   /**
-   * Process the next message in the queue, if any
+   * Continue the agent loop after tool results come back.
+   * Called from toolResult() via waitUntil().
+   */
+  private async continueAgentLoop(): Promise<void> {
+    // Process pending tool results
+    const pendingCallIds = Object.keys(this.pendingToolCalls);
+    if (pendingCallIds.length > 0) {
+      for (const callId of pendingCallIds) {
+        const call = this.pendingToolCalls[callId];
+        const content = call.error
+          ? `Error: ${call.error}`
+          : typeof call.result === "string"
+            ? call.result
+            : JSON.stringify(call.result);
+
+        const toolResultMessage: ToolResultMessage = {
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: content }],
+          isError: !!call.error,
+          timestamp: Date.now(),
+        };
+        this.addMessage(toolResultMessage);
+        delete this.pendingToolCalls[callId];
+      }
+    }
+
+    let response: AssistantMessage;
+    try {
+      response = await this.callLlm();
+    } catch (e) {
+      console.error(`[Session] LLM call failed:`, e);
+      await this.broadcastToClients({
+        runId: this.currentRun?.runId ?? null,
+        sessionKey: this.meta.sessionKey,
+        state: "error",
+        error: e instanceof Error ? e.message : String(e),
+      });
+      this.finishRun();
+      return;
+    }
+
+    if (!response.content || response.content.length === 0) {
+      // Check if there's an error message from the LLM
+      const errorDetail = response.errorMessage 
+        ? `LLM error: ${response.errorMessage}` 
+        : "LLM returned empty response";
+      console.error(`[Session] ${errorDetail}`);
+      await this.broadcastToClients({
+        runId: this.currentRun?.runId ?? null,
+        sessionKey: this.meta.sessionKey,
+        state: "error",
+        error: errorDetail,
+      });
+      this.finishRun();
+      return;
+    }
+
+    this.addMessage(response);
+    this.meta.updatedAt = Date.now();
+
+    const toolCalls = response.content.filter(
+      (block): block is ToolCall => block.type === "toolCall",
+    );
+
+    if (toolCalls.length > 0) {
+      // Request tool executions (fire and forget - don't await results here)
+      for (const toolCall of toolCalls) {
+        await this.requestToolExecution({
+          id: toolCall.id,
+          name: toolCall.name,
+          args: toolCall.arguments,
+        });
+      }
+      // Set alarm for tool timeout
+      this.ctx.storage.setAlarm(Date.now() + 60_000);
+      // DO can now hibernate - will wake on toolResult() or alarm()
+      console.log(`[Session] Waiting for ${toolCalls.length} tool results, run ${this.currentRun?.runId}`);
+      return;
+    }
+
+    // Final response - broadcast and finish
+    await this.broadcastToClients({
+      runId: this.currentRun?.runId ?? null,
+      sessionKey: this.meta.sessionKey,
+      state: "final",
+      message: response,
+    });
+    this.finishRun();
+  }
+
+  /**
+   * Clean up after a run completes (success or error)
+   */
+  private finishRun(): void {
+    const runId = this.currentRun?.runId;
+    this.currentRun = null;
+    console.log(`[Session] Finished run ${runId}`);
+
+    // Process next queued message if any (async)
+    if (this.messageQueue.length > 0) {
+      this.ctx.waitUntil(this.processNextQueued());
+    }
+  }
+
+  /**
+   * Process the next message in the queue
    */
   private async processNextQueued(): Promise<void> {
-    if (this.messageQueue.length === 0) {
+    if (this.messageQueue.length === 0 || this.isProcessing) {
       return;
     }
 
@@ -538,10 +689,11 @@ export class Session extends DurableObject<Env> {
     
     console.log(`[Session] Processing queued message ${next.id}, ${remaining.length} remaining`);
     
-    await this.processMessage(
+    // Start the next run (this sets currentRun)
+    this.startRun(
       next.text,
       next.runId,
-      this.currentTools, // Reuse tools from previous call
+      this.currentRun?.tools ?? next.messageOverrides ? [] : [], // Reuse tools if available
       next.messageOverrides,
       next.media,
     );
@@ -561,7 +713,6 @@ export class Session extends DurableObject<Env> {
    * Build a UserMessage with text and optional media attachments
    * Media with r2Key are stored as references (not base64)
    */
-  // TODO: add document support
   private buildUserMessage(
     text: string,
     media?: MediaAttachment[],
@@ -673,10 +824,14 @@ export class Session extends DurableObject<Env> {
     return date.getTime();
   }
 
+  /**
+   * Receive a tool result. Returns IMMEDIATELY.
+   * If all tools are resolved, continues the agent loop asynchronously.
+   */
   async toolResult(input: ToolResultInput): Promise<{ ok: boolean }> {
     const toolCall = this.pendingToolCalls[input.callId];
     if (!toolCall) {
-      console.warn(`Unknown tool call: ${input.callId}`);
+      console.warn(`[Session] Unknown tool call: ${input.callId}`);
       return { ok: false };
     }
 
@@ -686,10 +841,12 @@ export class Session extends DurableObject<Env> {
       toolCall.result = input.result;
     }
     this.pendingToolCalls[input.callId] = toolCall;
+    console.log(`[Session] Tool result received for ${input.callId} (${toolCall.name})`);
 
     if (this.allToolsResolved()) {
       this.ctx.storage.deleteAlarm();
-      await this.continueAgentLoop();
+      // Continue the loop asynchronously - don't await!
+      this.ctx.waitUntil(this.continueAgentLoop());
     }
 
     return { ok: true };
@@ -703,83 +860,6 @@ export class Session extends DurableObject<Env> {
     return true;
   }
 
-  private async continueAgentLoop(): Promise<void> {
-    // Process pending tool results
-    const pendingCallIds = Object.keys(this.pendingToolCalls);
-    if (pendingCallIds.length > 0) {
-      for (const callId of pendingCallIds) {
-        const call = this.pendingToolCalls[callId];
-        const content = call.error
-          ? `Error: ${call.error}`
-          : typeof call.result === "string"
-            ? call.result
-            : JSON.stringify(call.result);
-
-        const toolResultMessage: ToolResultMessage = {
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: content }],
-          isError: !!call.error,
-          timestamp: Date.now(),
-        };
-        this.addMessage(toolResultMessage);
-        delete this.pendingToolCalls[callId];
-      }
-    }
-
-    let response: AssistantMessage;
-    try {
-      response = await this.callLlm();
-    } catch (e) {
-      console.error(`[Session] LLM call failed:`, e);
-      await this.broadcastToClients({
-        runId: this.currentRunId,
-        sessionKey: this.meta.sessionKey,
-        state: "error",
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return;
-    }
-
-    if (!response.content || response.content.length === 0) {
-      console.error("[Session] LLM returned empty content");
-      await this.broadcastToClients({
-        runId: this.currentRunId,
-        sessionKey: this.meta.sessionKey,
-        state: "error",
-        error: "LLM returned empty response",
-      });
-      return;
-    }
-
-    this.addMessage(response);
-    this.meta.updatedAt = Date.now();
-
-    const toolCalls = response.content.filter(
-      (block): block is ToolCall => block.type === "toolCall",
-    );
-
-    if (toolCalls.length > 0) {
-      for (const toolCall of toolCalls) {
-        await this.requestToolExecution({
-          id: toolCall.id,
-          name: toolCall.name,
-          args: toolCall.arguments,
-        });
-      }
-      this.ctx.storage.setAlarm(Date.now() + 60_000);
-      return;
-    }
-
-    await this.broadcastToClients({
-      runId: this.currentRunId,
-      sessionKey: this.meta.sessionKey,
-      state: "final",
-      message: response,
-    });
-  }
-
   private async callLlm(): Promise<AssistantMessage> {
     const gateway = this.env.GATEWAY.get(
       this.env.GATEWAY.idFromName("singleton"),
@@ -787,9 +867,10 @@ export class Session extends DurableObject<Env> {
     const config: GsvConfig = await gateway.getConfig();
 
     const sessionSettings = this.meta.settings;
+    const messageOverrides = this.currentRun?.messageOverrides ?? {};
 
     const effectiveModel =
-      this.currentMessageOverrides.model ||
+      messageOverrides.model ||
       sessionSettings.model ||
       config.model;
     
@@ -799,18 +880,18 @@ export class Session extends DurableObject<Env> {
       sessionSettings,
     );
 
-    if (this.currentMessageOverrides.model) {
+    if (messageOverrides.model) {
       console.log(
-        `[Session] Using directive model override: ${this.currentMessageOverrides.model.provider}/${this.currentMessageOverrides.model.id}`,
+        `[Session] Using directive model override: ${messageOverrides.model.provider}/${messageOverrides.model.id}`,
       );
     }
-    if (this.currentMessageOverrides.thinkLevel) {
+    if (messageOverrides.thinkLevel) {
       console.log(
-        `[Session] Using directive thinking level: ${this.currentMessageOverrides.thinkLevel}`,
+        `[Session] Using directive thinking level: ${messageOverrides.thinkLevel}`,
       );
     }
 
-    const tools: Tool[] = this.currentTools.map((t) => ({
+    const tools: Tool[] = (this.currentRun?.tools ?? []).map((t) => ({
       name: t.name,
       description: t.description,
       parameters: t.inputSchema as Tool["parameters"],
@@ -873,7 +954,7 @@ export class Session extends DurableObject<Env> {
     }
 
     const effectiveThinkLevel =
-      this.currentMessageOverrides.thinkLevel || sessionSettings.thinkingLevel;
+      messageOverrides.thinkLevel || sessionSettings.thinkingLevel;
 
     // Map to pi-ai reasoning levels: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
     const reasoningLevel =
@@ -968,7 +1049,7 @@ export class Session extends DurableObject<Env> {
 
   private async requestToolExecution(toolCall: PendingToolCall): Promise<void> {
     if (!this.meta.sessionKey) {
-      console.error("Cannot request tool: sessionKey not set");
+      console.error("[Session] Cannot request tool: sessionKey not set");
       return;
     }
 
@@ -977,6 +1058,7 @@ export class Session extends DurableObject<Env> {
     const gateway = this.env.GATEWAY.get(
       this.env.GATEWAY.idFromName("singleton"),
     );
+    // Fire and forget - don't await the tool execution, just the request dispatch
     const result = await gateway.toolRequest({
       callId: toolCall.id,
       tool: toolCall.name,
@@ -991,13 +1073,16 @@ export class Session extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    console.log(`[Session] Alarm fired - checking for timed out tools`);
     for (const callId of Object.keys(this.pendingToolCalls)) {
       const call = this.pendingToolCalls[callId];
       if (call.result === undefined && !call.error) {
         call.error = "Tool execution timed out";
         this.pendingToolCalls[callId] = call;
+        console.log(`[Session] Tool ${call.name} (${callId}) timed out`);
       }
     }
+    // Continue the loop with timeout errors
     await this.continueAgentLoop();
   }
 
@@ -1047,6 +1132,9 @@ export class Session extends DurableObject<Env> {
 
     // Clear media cache
     this.mediaCache.clear();
+
+    // Clear current run
+    this.currentRun = null;
 
     // Update metadata
     const newSessionId = Session.generateSessionId();
@@ -1233,6 +1321,8 @@ export class Session extends DurableObject<Env> {
         sessionId: this.meta.sessionId,
         messageCount: this.getMessageCount(),
         pendingToolCalls: Object.keys(this.pendingToolCalls).length,
+        isProcessing: this.isProcessing,
+        currentRunId: this.currentRun?.runId,
         tokens: {
           input: this.meta.inputTokens,
           output: this.meta.outputTokens,

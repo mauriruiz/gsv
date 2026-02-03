@@ -76,7 +76,7 @@ This installs the CLI and optionally deploys the gateway to your Cloudflare acco
 # Run a node (tools are namespaced by node ID)
 gsv node --id macbook --workspace ~/projects
 
-# The gateway sees tools as: macbook:Bash, macbook:Read, macbook:Write, etc.
+# The gateway sees tools as: macbook__Bash, macbook__Read, macbook__Write, etc.
 ```
 
 ### Chat
@@ -113,10 +113,10 @@ gsv node --id laptop --workspace ~/code
 gsv node --id server --workspace /var/app
 
 # The LLM sees:
-#   laptop:Bash, laptop:Read, laptop:Write, laptop:Edit, laptop:Glob, laptop:Grep
-#   server:Bash, server:Read, server:Write, server:Edit, server:Glob, server:Grep
+#   laptop__Bash, laptop__Read, laptop__Write, laptop__Edit, laptop__Glob, laptop__Grep
+#   server__Bash, server__Read, server__Write, server__Edit, server__Glob, server__Grep
 
-# And can reason: "I'll check the logs on the server" → uses server:Bash
+# And can reason: "I'll check the logs on the server" → uses server__Bash
 ```
 
 ### Test Tools Directly
@@ -126,8 +126,8 @@ gsv node --id server --workspace /var/app
 gsv tools list
 
 # Call a tool directly
-gsv tools call "macbook:Bash" '{"command": "ls -la"}'
-gsv tools call "macbook:Read" '{"path": "/etc/hosts"}'
+gsv tools call "macbook__Bash" '{"command": "ls -la"}'
+gsv tools call "macbook__Read" '{"path": "/etc/hosts"}'
 ```
 
 ## Components

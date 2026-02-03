@@ -290,7 +290,7 @@ export class Gateway extends DurableObject<Env> {
       // Store tools with their original names (namespacing happens in getAllTools)
       this.toolRegistry[nodeId] = params.tools ?? [];
       console.log(
-        `[Gateway] Node connected: ${nodeId}, tools: [${(params.tools ?? []).map((t) => `${nodeId}:${t.name}`).join(", ")}]`,
+        `[Gateway] Node connected: ${nodeId}, tools: [${(params.tools ?? []).map((t) => `${nodeId}__${t.name}`).join(", ")}]`,
       );
     } else if (mode === "channel") {
       const channel = params.client.channel;
@@ -736,11 +736,11 @@ export class Gateway extends DurableObject<Env> {
 
   /**
    * Find the node for a namespaced tool name.
-   * Tool names are formatted as "{nodeId}:{toolName}"
+   * Tool names are formatted as "{nodeId}__{toolName}"
    */
   findNodeForTool(namespacedTool: string): { nodeId: string; toolName: string } | null {
-    const colonIndex = namespacedTool.indexOf(":");
-    if (colonIndex === -1) {
+    const separatorIndex = namespacedTool.indexOf("__");
+    if (separatorIndex === -1) {
       // Legacy: no namespace, search all nodes
       for (const nodeId of this.nodes.keys()) {
         if (this.toolRegistry[nodeId]?.some((t: ToolDefinition) => t.name === namespacedTool)) {
@@ -750,8 +750,8 @@ export class Gateway extends DurableObject<Env> {
       return null;
     }
     
-    const nodeId = namespacedTool.slice(0, colonIndex);
-    const toolName = namespacedTool.slice(colonIndex + 1);
+    const nodeId = namespacedTool.slice(0, separatorIndex);
+    const toolName = namespacedTool.slice(separatorIndex + 2); // +2 for '__'
     
     // Verify node exists and has this tool
     if (!this.nodes.has(nodeId)) {
@@ -774,11 +774,11 @@ export class Gateway extends DurableObject<Env> {
     console.log(
       `[Gateway]   toolRegistry keys: [${Object.keys(this.toolRegistry).join(", ")}]`,
     );
-    // Namespace tools as {nodeId}:{toolName}
+    // Namespace tools as {nodeId}__{toolName}
     const tools = Array.from(this.nodes.keys()).flatMap(
       (nodeId) => (this.toolRegistry[nodeId] ?? []).map((tool) => ({
         ...tool,
-        name: `${nodeId}:${tool.name}`,
+        name: `${nodeId}__${tool.name}`,
       })),
     );
     console.log(`[Gateway]   returning ${tools.length} tools: [${tools.map(t => t.name).join(", ")}]`);
