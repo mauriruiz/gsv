@@ -21,6 +21,12 @@ import {
   ChannelId,
   PeerInfo,
 } from "./types";
+import type {
+  ChannelWorkerInterface,
+  ChannelOutboundMessage,
+  ChannelPeer,
+  SendResult,
+} from "./channel-interface";
 import { isWebSocketRequest, validateFrame, isWsConnected } from "./utils";
 import { GsvConfig, DEFAULT_CONFIG, mergeConfig, resolveAgentIdFromBinding, getAgentConfig, parseDuration, HeartbeatConfig, isAllowedSender, PendingPair, normalizeE164, resolveLinkedIdentity } from "./config";
 import { 
@@ -1383,7 +1389,26 @@ export class Gateway extends DurableObject<Env> {
   }
 
   /**
-   * Send a response back to a channel
+   * Get channel service binding by channel ID.
+   * Returns undefined if channel is not configured.
+   */
+  private getChannelBinding(channel: ChannelId): (Fetcher & ChannelWorkerInterface) | undefined {
+    // Map channel IDs to service bindings
+    // Add new channels here as they're configured
+    switch (channel) {
+      case "whatsapp":
+        return (this.env as any).CHANNEL_WHATSAPP as Fetcher & ChannelWorkerInterface;
+      // case "discord":
+      //   return (this.env as any).CHANNEL_DISCORD;
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Send a response back to a channel via Service Binding RPC.
+   * Falls back to WebSocket if channel binding not configured.
+   * Fire-and-forget - errors are logged but not propagated.
    */
   private sendChannelResponse(
     channel: ChannelId,
@@ -1392,6 +1417,28 @@ export class Gateway extends DurableObject<Env> {
     replyToId: string,
     text: string,
   ): void {
+    // Try Service Binding RPC first (fire-and-forget)
+    const channelBinding = this.getChannelBinding(channel);
+    if (channelBinding) {
+      const message: ChannelOutboundMessage = {
+        peer: peer as ChannelPeer,
+        text,
+        replyToId,
+      };
+      channelBinding.send(accountId, message)
+        .then(result => {
+          if (!result.ok) {
+            console.error(`[Gateway] Channel RPC send failed: ${result.error}`);
+          }
+        })
+        .catch(e => {
+          console.error(`[Gateway] Channel RPC error:`, e);
+          // Could implement WebSocket fallback here if needed
+        });
+      return;
+    }
+
+    // WebSocket fallback (for backwards compatibility during migration)
     const channelKey = `${channel}:${accountId}`;
     const channelWs = this.channels.get(channelKey);
     
@@ -1404,7 +1451,7 @@ export class Gateway extends DurableObject<Env> {
       channel,
       accountId,
       peer,
-      sessionKey: "", // Not associated with a session for commands
+      sessionKey: "",
       message: {
         text,
         replyToId,
@@ -1421,7 +1468,9 @@ export class Gateway extends DurableObject<Env> {
   }
 
   /**
-   * Send a typing indicator to a channel
+   * Send a typing indicator to a channel via Service Binding RPC.
+   * Falls back to WebSocket if channel binding not configured.
+   * Fire-and-forget - errors are logged but not propagated.
    */
   private sendTypingToChannel(
     channel: ChannelId,
@@ -1430,11 +1479,25 @@ export class Gateway extends DurableObject<Env> {
     sessionKey: string,
     typing: boolean,
   ): void {
+    // Try Service Binding RPC first (fire-and-forget)
+    const channelBinding = this.getChannelBinding(channel);
+    if (channelBinding?.setTyping) {
+      channelBinding.setTyping(accountId, peer as ChannelPeer, typing)
+        .then(() => {
+          console.log(`[Gateway] Sent typing=${typing} via RPC to ${channel}:${accountId}`);
+        })
+        .catch(e => {
+          console.error(`[Gateway] Channel typing RPC error:`, e);
+        });
+      return;
+    }
+
+    // WebSocket fallback
     const channelKey = `${channel}:${accountId}`;
     const channelWs = this.channels.get(channelKey);
     
     if (!channelWs || channelWs.readyState !== WebSocket.OPEN) {
-      return; // Silently ignore if channel not connected
+      return;
     }
 
     const payload: ChannelTypingPayload = {

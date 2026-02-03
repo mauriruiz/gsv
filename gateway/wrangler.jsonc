@@ -42,7 +42,17 @@
 	// Workers AI for audio transcription (free)
 	"ai": {
 		"binding": "AI"
-	}
+	},
+	// Channel service bindings (Gateway → Channel RPC)
+	"services": [
+		{
+			"binding": "CHANNEL_WHATSAPP",
+			"service": "gsv-channel-whatsapp",
+			"entrypoint": "WhatsAppChannel"
+		}
+		// Add more channels as needed:
+		// { "binding": "CHANNEL_DISCORD", "service": "gsv-channel-discord", "entrypoint": "DiscordChannel" }
+	]
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

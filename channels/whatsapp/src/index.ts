@@ -334,10 +334,21 @@ export default {
     if (authError) return authError;
 
     // Route: /account/:accountId/...
+    // Only expose management endpoints, not internal RPC endpoints
     const accountMatch = path.match(/^\/account\/([^\/]+)(\/.*)?$/);
     if (accountMatch) {
       const accountId = accountMatch[1];
       const subPath = accountMatch[2] || "/status";
+      
+      // Block internal-only endpoints from external access
+      // These are only callable via Service Binding RPC through the WorkerEntrypoint
+      const internalOnly = ["/send", "/typing"];
+      if (internalOnly.includes(subPath)) {
+        return Response.json(
+          { error: "This endpoint is internal-only. Use Service Binding RPC." },
+          { status: 403 }
+        );
+      }
       
       const id = env.WHATSAPP_ACCOUNT.idFromName(accountId);
       const stub = env.WHATSAPP_ACCOUNT.get(id);
