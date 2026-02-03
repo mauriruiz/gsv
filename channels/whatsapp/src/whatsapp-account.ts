@@ -418,9 +418,9 @@ export class WhatsAppAccount extends DurableObject<Env> {
       };
 
       // Send to Gateway via Service Binding RPC
+      // accountId must be the DO name (used for routing), NOT the phone number
       try {
-        const accountId = this.state.selfE164 || this.state.accountId;
-        const result = await this.env.GATEWAY.channelInbound("whatsapp", accountId, inbound);
+        const result = await this.env.GATEWAY.channelInbound("whatsapp", this.state.accountId, inbound);
         
         if (result.ok) {
           this.state.lastMessageAt = Date.now();
@@ -532,17 +532,17 @@ export class WhatsAppAccount extends DurableObject<Env> {
    */
   private async notifyGatewayStatus(): Promise<void> {
     try {
-      const accountId = this.state.selfE164 || this.state.accountId;
+      // accountId must be the DO name (used for routing), NOT the phone number
       const status: ChannelAccountStatus = {
-        accountId,
+        accountId: this.state.accountId,
         connected: this.state.connected,
         authenticated: !!this.state.selfJid,
         mode: "websocket",
         lastActivity: this.state.lastMessageAt,
-        extra: { selfJid: this.state.selfJid },
+        extra: { selfJid: this.state.selfJid, selfE164: this.state.selfE164 },
       };
       
-      await this.env.GATEWAY.channelStatusChanged("whatsapp", accountId, status);
+      await this.env.GATEWAY.channelStatusChanged("whatsapp", this.state.accountId, status);
     } catch (e) {
       console.error(`[WA] Failed to notify Gateway of status:`, e);
     }
