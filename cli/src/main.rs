@@ -99,6 +99,12 @@ enum Commands {
         #[command(subcommand)]
         action: PairAction,
     },
+
+    /// Manage channel accounts (WhatsApp, Discord, etc.)
+    Channel {
+        #[command(subcommand)]
+        action: ChannelAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -138,6 +144,47 @@ enum PairAction {
 
         /// Sender ID (e.g., "+1234567890")
         sender_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChannelAction {
+    /// WhatsApp channel management
+    Whatsapp {
+        #[command(subcommand)]
+        action: WhatsAppAction,
+    },
+    // TODO: Add Discord, Telegram, etc.
+}
+
+#[derive(Subcommand)]
+enum WhatsAppAction {
+    /// Login to WhatsApp (displays QR code in terminal)
+    Login {
+        /// Account ID (arbitrary name for this WhatsApp account)
+        #[arg(default_value = "default")]
+        account_id: String,
+    },
+
+    /// Check WhatsApp account status
+    Status {
+        /// Account ID
+        #[arg(default_value = "default")]
+        account_id: String,
+    },
+
+    /// Logout from WhatsApp (clears credentials)
+    Logout {
+        /// Account ID
+        #[arg(default_value = "default")]
+        account_id: String,
+    },
+
+    /// Stop WhatsApp connection
+    Stop {
+        /// Account ID
+        #[arg(default_value = "default")]
+        account_id: String,
     },
 }
 
@@ -323,6 +370,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Mount { action } => run_mount(action, &cfg).await,
         Commands::Heartbeat { action } => run_heartbeat(&url, token, action).await,
         Commands::Pair { action } => run_pair(&url, token, action).await,
+        Commands::Channel { action } => run_channel(action, &cfg).await,
     }
 }
 
@@ -829,6 +877,167 @@ async fn run_pair(
 
     Ok(())
 }
+
+async fn run_channel(
+    action: ChannelAction,
+    cfg: &CliConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        ChannelAction::Whatsapp { action } => run_whatsapp(action, cfg).await,
+    }
+}
+
+async fn run_whatsapp(
+    action: WhatsAppAction,
+    cfg: &CliConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // WhatsApp channel URL - derive from gateway URL or use explicit config
+    // Gateway URL: wss://gateway.example.com/ws
+    // WhatsApp URL: https://gsv-channel-whatsapp.example.workers.dev
+    let whatsapp_url = cfg.whatsapp_url().ok_or(
+        "WhatsApp channel URL not configured. Set channels.whatsapp.url in config or WHATSAPP_CHANNEL_URL env var"
+    )?;
+    let auth_token = cfg.whatsapp_token();
+
+    match action {
+        WhatsAppAction::Login { account_id } => {
+            println!("Logging in to WhatsApp account: {}", account_id);
+            println!("Connecting to {}...", whatsapp_url);
+
+            let client = reqwest::Client::new();
+            let url = format!("{}/account/{}/login", whatsapp_url, account_id);
+            
+            let mut req = client.post(&url);
+            if let Some(token) = &auth_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let res = req.send().await?;
+            
+            if !res.status().is_success() {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                eprintln!("Error: {} - {}", status, body);
+                return Ok(());
+            }
+
+            let data: serde_json::Value = res.json().await?;
+            
+            if data.get("connected").and_then(|c| c.as_bool()).unwrap_or(false) {
+                println!("Already connected to WhatsApp!");
+                return Ok(());
+            }
+
+            if let Some(qr) = data.get("qr").and_then(|q| q.as_str()) {
+                println!("\nScan this QR code with WhatsApp:\n");
+                render_qr_terminal(qr)?;
+                println!("\nQR code expires in ~20 seconds. Re-run command if needed.");
+                println!("After scanning, the account will auto-connect.");
+            } else {
+                let msg = data.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+                eprintln!("Failed to get QR code: {}", msg);
+            }
+        }
+
+        WhatsAppAction::Status { account_id } => {
+            let client = reqwest::Client::new();
+            let url = format!("{}/account/{}/status", whatsapp_url, account_id);
+            
+            let mut req = client.get(&url);
+            if let Some(token) = &auth_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let res = req.send().await?;
+            
+            if !res.status().is_success() {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                eprintln!("Error: {} - {}", status, body);
+                return Ok(());
+            }
+
+            let data: serde_json::Value = res.json().await?;
+            
+            println!("WhatsApp account: {}", account_id);
+            println!("  Connected: {}", data.get("connected").and_then(|c| c.as_bool()).unwrap_or(false));
+            if let Some(jid) = data.get("selfJid").and_then(|j| j.as_str()) {
+                println!("  JID: {}", jid);
+            }
+            if let Some(e164) = data.get("selfE164").and_then(|e| e.as_str()) {
+                println!("  Phone: {}", e164);
+            }
+            if let Some(last) = data.get("lastConnectedAt").and_then(|t| t.as_i64()) {
+                let dt = chrono::DateTime::from_timestamp_millis(last);
+                if let Some(dt) = dt {
+                    println!("  Last connected: {}", dt.format("%Y-%m-%d %H:%M:%S"));
+                }
+            }
+        }
+
+        WhatsAppAction::Logout { account_id } => {
+            println!("Logging out WhatsApp account: {}", account_id);
+            
+            let client = reqwest::Client::new();
+            let url = format!("{}/account/{}/logout", whatsapp_url, account_id);
+            
+            let mut req = client.post(&url);
+            if let Some(token) = &auth_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let res = req.send().await?;
+            
+            if res.status().is_success() {
+                println!("Logged out successfully. Credentials cleared.");
+            } else {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                eprintln!("Error: {} - {}", status, body);
+            }
+        }
+
+        WhatsAppAction::Stop { account_id } => {
+            println!("Stopping WhatsApp account: {}", account_id);
+            
+            let client = reqwest::Client::new();
+            let url = format!("{}/account/{}/stop", whatsapp_url, account_id);
+            
+            let mut req = client.post(&url);
+            if let Some(token) = &auth_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let res = req.send().await?;
+            
+            if res.status().is_success() {
+                println!("Stopped.");
+            } else {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                eprintln!("Error: {} - {}", status, body);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn render_qr_terminal(data: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use qrcode::QrCode;
+    use qrcode::render::unicode;
+
+    let code = QrCode::new(data.as_bytes())?;
+    let image = code
+        .render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Light)
+        .light_color(unicode::Dense1x2::Dark)
+        .build();
+    
+    println!("{}", image);
+    Ok(())
+}
+
 /// Returns true if the response was a command/directive (no need to wait for chat event)
 async fn send_chat(
     conn: &Connection,
