@@ -1,0 +1,488 @@
+/**
+ * GSV App - Main Application Component
+ */
+
+import { LitElement, html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
+import { GatewayClient, type ConnectionState } from "./gateway-client";
+import { loadSettings, saveSettings, applyTheme, type UiSettings } from "./storage";
+import { navigateTo, getCurrentTab, tabFromPath } from "./navigation";
+import type {
+  Tab,
+  EventFrame,
+  SessionRegistryEntry,
+  ChatEventPayload,
+  Message,
+  AssistantMessage,
+  ToolDefinition,
+  ChannelRegistryEntry,
+} from "./types";
+import { TAB_GROUPS, TAB_ICONS, TAB_LABELS } from "./types";
+
+// View imports
+import { renderChat } from "./views/chat";
+import { renderOverview } from "./views/overview";
+import { renderSessions } from "./views/sessions";
+import { renderChannels } from "./views/channels";
+import { renderNodes } from "./views/nodes";
+import { renderWorkspace } from "./views/workspace";
+import { renderConfig } from "./views/config";
+import { renderDebug } from "./views/debug";
+
+@customElement("gsv-app")
+export class GsvApp extends LitElement {
+  // Disable shadow DOM to use global styles
+  createRenderRoot() {
+    return this;
+  }
+
+  // ---- Connection State ----
+  @state() connectionState: ConnectionState = "disconnected";
+  @state() settings: UiSettings = loadSettings();
+  
+  client: GatewayClient | null = null;
+
+  // ---- Navigation ----
+  @state() tab: Tab = getCurrentTab();
+
+  // ---- Chat State ----
+  @state() chatMessages: Message[] = [];
+  @state() chatLoading = false;
+  @state() chatSending = false;
+  @state() chatStream: AssistantMessage | null = null;
+  @state() currentRunId: string | null = null;
+
+  // ---- Sessions State ----
+  @state() sessions: SessionRegistryEntry[] = [];
+  @state() sessionsLoading = false;
+
+  // ---- Channels State ----
+  @state() channels: ChannelRegistryEntry[] = [];
+  @state() channelsLoading = false;
+
+  // ---- Nodes State ----
+  @state() tools: ToolDefinition[] = [];
+  @state() toolsLoading = false;
+
+  // ---- Workspace State ----
+  @state() workspaceFiles: { path: string; files: string[]; directories: string[] } | null = null;
+  @state() workspaceLoading = false;
+  @state() workspaceCurrentPath = "/";
+  @state() workspaceFileContent: { path: string; content: string } | null = null;
+
+  // ---- Config State ----
+  @state() config: Record<string, unknown> | null = null;
+  @state() configLoading = false;
+
+  // ---- Debug State ----
+  @state() debugLog: { time: Date; type: string; data: unknown }[] = [];
+
+  // ---- Lifecycle ----
+
+  connectedCallback() {
+    super.connectedCallback();
+    applyTheme(this.settings.theme);
+    this.startConnection();
+    
+    // Handle browser back/forward
+    window.addEventListener("popstate", this.handlePopState);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.client?.stop();
+    window.removeEventListener("popstate", this.handlePopState);
+  }
+
+  private handlePopState = () => {
+    this.tab = getCurrentTab();
+  };
+
+  // ---- Connection ----
+
+  private startConnection() {
+    if (this.client) {
+      this.client.stop();
+    }
+
+    this.client = new GatewayClient({
+      url: this.settings.gatewayUrl,
+      token: this.settings.token || undefined,
+      onStateChange: (state) => {
+        this.connectionState = state;
+        if (state === "connected") {
+          this.onConnected();
+        }
+      },
+      onEvent: (event) => this.handleEvent(event),
+    });
+
+    this.client.start();
+  }
+
+  private async onConnected() {
+    // Load initial data based on current tab
+    this.loadTabData(this.tab);
+  }
+
+  private handleEvent(event: EventFrame) {
+    this.debugLog = [...this.debugLog.slice(-99), { time: new Date(), type: event.event, data: event.payload }];
+    
+    if (event.event === "chat") {
+      this.handleChatEvent(event.payload as ChatEventPayload);
+    }
+  }
+
+  // ---- Tab Navigation ----
+
+  switchTab(tab: Tab) {
+    if (this.tab !== tab) {
+      this.tab = tab;
+      navigateTo(tab);
+      this.loadTabData(tab);
+    }
+  }
+
+  private async loadTabData(tab: Tab) {
+    if (!this.client || this.connectionState !== "connected") return;
+
+    switch (tab) {
+      case "chat":
+        await this.loadChatHistory();
+        break;
+      case "sessions":
+        await this.loadSessions();
+        break;
+      case "channels":
+        await this.loadChannels();
+        break;
+      case "nodes":
+        await this.loadTools();
+        break;
+      case "workspace":
+        await this.loadWorkspace();
+        break;
+      case "config":
+        await this.loadConfig();
+        break;
+    }
+  }
+
+  // ---- Chat ----
+
+  private async loadChatHistory() {
+    if (!this.client) return;
+    this.chatLoading = true;
+    try {
+      const res = await this.client.sessionPreview(this.settings.sessionKey, 100);
+      if (res.ok && res.payload) {
+        const data = res.payload as { messages: Message[] };
+        this.chatMessages = data.messages || [];
+      }
+    } catch (e) {
+      console.error("Failed to load chat:", e);
+    } finally {
+      this.chatLoading = false;
+    }
+  }
+
+  async sendMessage(text: string) {
+    if (!this.client || !text.trim()) return;
+    
+    this.chatSending = true;
+    this.currentRunId = crypto.randomUUID();
+    
+    // Optimistic update
+    this.chatMessages = [
+      ...this.chatMessages,
+      { role: "user", content: text, timestamp: Date.now() },
+    ];
+    
+    try {
+      await this.client.chatSend(this.settings.sessionKey, text, this.currentRunId);
+    } catch (e) {
+      console.error("Failed to send:", e);
+      this.chatSending = false;
+    }
+  }
+
+  private handleChatEvent(payload: ChatEventPayload) {
+    if (payload.sessionKey !== this.settings.sessionKey) return;
+
+    if (payload.state === "partial" && payload.message) {
+      this.chatStream = payload.message;
+    } else if (payload.state === "final") {
+      this.chatStream = null;
+      this.chatSending = false;
+      this.currentRunId = null;
+      // Reload to get proper history
+      this.loadChatHistory();
+    } else if (payload.state === "error") {
+      this.chatStream = null;
+      this.chatSending = false;
+      this.currentRunId = null;
+      console.error("Chat error:", payload.error);
+    }
+  }
+
+  // ---- Sessions ----
+
+  private async loadSessions() {
+    if (!this.client) return;
+    this.sessionsLoading = true;
+    try {
+      const res = await this.client.sessionsList();
+      if (res.ok && res.payload) {
+        const data = res.payload as { sessions: SessionRegistryEntry[] };
+        this.sessions = data.sessions || [];
+      }
+    } catch (e) {
+      console.error("Failed to load sessions:", e);
+    } finally {
+      this.sessionsLoading = false;
+    }
+  }
+
+  async selectSession(sessionKey: string) {
+    this.settings = { ...this.settings, sessionKey };
+    saveSettings({ sessionKey });
+    this.switchTab("chat");
+    await this.loadChatHistory();
+  }
+
+  async resetSession(sessionKey: string) {
+    if (!this.client) return;
+    if (!confirm(`Reset session ${sessionKey}? This will archive all messages.`)) return;
+    
+    try {
+      await this.client.sessionReset(sessionKey);
+      await this.loadSessions();
+      if (sessionKey === this.settings.sessionKey) {
+        this.chatMessages = [];
+      }
+    } catch (e) {
+      console.error("Failed to reset session:", e);
+    }
+  }
+
+  // ---- Channels ----
+
+  private async loadChannels() {
+    if (!this.client) return;
+    this.channelsLoading = true;
+    try {
+      const res = await this.client.channelsList();
+      if (res.ok && res.payload) {
+        const data = res.payload as { channels: ChannelRegistryEntry[] };
+        this.channels = data.channels || [];
+      }
+    } catch (e) {
+      console.error("Failed to load channels:", e);
+    } finally {
+      this.channelsLoading = false;
+    }
+  }
+
+  // ---- Nodes / Tools ----
+
+  private async loadTools() {
+    if (!this.client) return;
+    this.toolsLoading = true;
+    try {
+      const res = await this.client.toolsList();
+      if (res.ok && res.payload) {
+        const data = res.payload as { tools: ToolDefinition[] };
+        this.tools = data.tools || [];
+      }
+    } catch (e) {
+      console.error("Failed to load tools:", e);
+    } finally {
+      this.toolsLoading = false;
+    }
+  }
+
+  // ---- Workspace ----
+
+  private async loadWorkspace(path = "/") {
+    if (!this.client) return;
+    this.workspaceLoading = true;
+    this.workspaceCurrentPath = path;
+    try {
+      const res = await this.client.toolInvoke("gsv__ListFiles", { path });
+      if (res.ok && res.payload) {
+        const data = res.payload as { result: { path: string; files: string[]; directories: string[] } };
+        this.workspaceFiles = data.result;
+      }
+    } catch (e) {
+      console.error("Failed to load workspace:", e);
+    } finally {
+      this.workspaceLoading = false;
+    }
+  }
+
+  async readWorkspaceFile(path: string) {
+    if (!this.client) return;
+    try {
+      const res = await this.client.toolInvoke("gsv__ReadFile", { path });
+      if (res.ok && res.payload) {
+        const data = res.payload as { result: { path: string; content: string } };
+        this.workspaceFileContent = data.result;
+      }
+    } catch (e) {
+      console.error("Failed to read file:", e);
+    }
+  }
+
+  async writeWorkspaceFile(path: string, content: string) {
+    if (!this.client) return;
+    try {
+      await this.client.toolInvoke("gsv__WriteFile", { path, content });
+      this.workspaceFileContent = { path, content };
+      await this.loadWorkspace(this.workspaceCurrentPath);
+    } catch (e) {
+      console.error("Failed to write file:", e);
+    }
+  }
+
+  // ---- Config ----
+
+  private async loadConfig() {
+    if (!this.client) return;
+    this.configLoading = true;
+    try {
+      const res = await this.client.configGet();
+      if (res.ok && res.payload) {
+        const data = res.payload as { config: Record<string, unknown> };
+        this.config = data.config;
+      }
+    } catch (e) {
+      console.error("Failed to load config:", e);
+    } finally {
+      this.configLoading = false;
+    }
+  }
+
+  async saveConfig(path: string, value: unknown) {
+    if (!this.client) return;
+    try {
+      await this.client.configSet(path, value);
+      await this.loadConfig();
+    } catch (e) {
+      console.error("Failed to save config:", e);
+    }
+  }
+
+  // ---- Settings ----
+
+  updateSettings(updates: Partial<UiSettings>) {
+    this.settings = { ...this.settings, ...updates };
+    saveSettings(updates);
+    
+    if (updates.theme) {
+      applyTheme(updates.theme);
+    }
+    
+    if (updates.gatewayUrl || updates.token !== undefined) {
+      this.startConnection();
+    }
+  }
+
+  // ---- Render ----
+
+  render() {
+    return html`
+      <div class="app-shell">
+        ${this.renderNav()}
+        <div class="main-content">
+          ${this.renderTopbar()}
+          <div class="page-content">
+            ${this.renderView()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderNav() {
+    return html`
+      <nav class="nav-sidebar">
+        <div class="nav-header">
+          <span class="nav-logo">🚀</span>
+          <span class="nav-title">GSV</span>
+        </div>
+        
+        <div class="nav-groups">
+          ${TAB_GROUPS.map(group => html`
+            <div class="nav-group">
+              <div class="nav-group-label">${group.label}</div>
+              ${group.tabs.map(tab => html`
+                <div 
+                  class="nav-item ${this.tab === tab ? "active" : ""}"
+                  @click=${() => this.switchTab(tab)}
+                >
+                  <span class="nav-item-icon">${TAB_ICONS[tab]}</span>
+                  <span class="nav-item-label">${TAB_LABELS[tab]}</span>
+                </div>
+              `)}
+            </div>
+          `)}
+        </div>
+        
+        <div class="nav-footer">
+          <div class="connection-status">
+            <span class="connection-dot ${this.connectionState}"></span>
+            <span>${this.connectionState === "connected" ? "Connected" : 
+                   this.connectionState === "connecting" ? "Connecting..." : 
+                   "Disconnected"}</span>
+          </div>
+        </div>
+      </nav>
+    `;
+  }
+
+  private renderTopbar() {
+    return html`
+      <header class="topbar">
+        <h1 class="topbar-title">${TAB_LABELS[this.tab]}</h1>
+        <div class="topbar-actions">
+          <button 
+            class="btn btn-ghost btn-icon"
+            @click=${() => this.updateSettings({ theme: this.settings.theme === "dark" ? "light" : "dark" })}
+            title="Toggle theme"
+          >
+            ${this.settings.theme === "dark" ? "🌙" : "☀️"}
+          </button>
+        </div>
+      </header>
+    `;
+  }
+
+  private renderView() {
+    switch (this.tab) {
+      case "chat":
+        return renderChat(this);
+      case "overview":
+        return renderOverview(this);
+      case "sessions":
+        return renderSessions(this);
+      case "channels":
+        return renderChannels(this);
+      case "nodes":
+        return renderNodes(this);
+      case "workspace":
+        return renderWorkspace(this);
+      case "config":
+        return renderConfig(this);
+      case "debug":
+        return renderDebug(this);
+      default:
+        return html`<div>Unknown view</div>`;
+    }
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "gsv-app": GsvApp;
+  }
+}
