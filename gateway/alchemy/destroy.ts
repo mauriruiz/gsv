@@ -1,39 +1,56 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 /**
- * Destroy GSV Gateway resources using Alchemy
+ * Destroy GSV resources using Alchemy
  * 
- * Usage: npm run destroy
+ * Usage: 
+ *   ALCHEMY_PASSWORD=xxx bun alchemy/destroy.ts
+ *   ALCHEMY_PASSWORD=xxx bun alchemy/destroy.ts --name my-stack
  */
 import alchemy from "alchemy";
-import { createGsvInfra } from "./infra.js";
-
-const STACK_NAME = "gsv-gateway";
-const WORKER_NAME = "gateway";
+import { createGsvInfra } from "./infra";
 
 async function main() {
-  console.log("🗑️  Destroying GSV Gateway resources...\n");
+  // Parse args
+  const args = process.argv.slice(2);
+  let stackName = "gsv";
+  
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--name" && args[i + 1]) {
+      stackName = args[++i];
+    }
+  }
 
-  const app = await alchemy(STACK_NAME, {
+  if (!process.env.ALCHEMY_PASSWORD) {
+    console.error("Error: ALCHEMY_PASSWORD environment variable required");
+    console.error("Usage: ALCHEMY_PASSWORD=xxx bun alchemy/destroy.ts");
+    process.exit(1);
+  }
+
+  console.log(`🗑️  Destroying GSV resources (stack: ${stackName})...\n`);
+
+  const app = await alchemy(stackName, {
+    stage: process.env.USER || "default",
     phase: "destroy",
-    stateDir: ".alchemy",
+    password: process.env.ALCHEMY_PASSWORD,
   });
 
   try {
-    await app.run(async () => {
-      // Need to "create" resources so alchemy knows what to destroy
-      await createGsvInfra({
-        name: WORKER_NAME,
-        entrypoint: "src/index.ts",
-      });
+    // Need to "create" resources so alchemy knows what to destroy
+    // Match the options used during deployment
+    await createGsvInfra({
+      name: stackName,
+      url: true,
+      withWhatsApp: true,
+      withDiscord: true,
+      withTemplates: true,
     });
 
-    console.log("\n✅ Resources destroyed!");
-  } finally {
     await app.finalize();
+    console.log("\n✅ Resources destroyed!");
+  } catch (err) {
+    console.error("Destroy failed:", err);
+    process.exit(1);
   }
 }
 
-main().catch((err) => {
-  console.error("Destroy failed:", err);
-  process.exit(1);
-});
+main();

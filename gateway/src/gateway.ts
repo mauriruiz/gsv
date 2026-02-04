@@ -275,8 +275,11 @@ export class Gateway extends DurableObject<Env> {
       return;
     }
 
-    // Check auth token if configured
-    const authToken = this.getConfigPath("auth.token") as string | undefined;
+    // Check auth token if configured (from config or env secret)
+    const configToken = this.getConfigPath("auth.token") as string | undefined;
+    const envToken = (this.env as unknown as { AUTH_TOKEN?: string }).AUTH_TOKEN;
+    const authToken = configToken || envToken;
+    
     if (authToken) {
       const providedToken = params?.auth?.token;
       if (!providedToken || !timingSafeEqual(providedToken, authToken)) {

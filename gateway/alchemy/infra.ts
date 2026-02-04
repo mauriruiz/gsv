@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Resolve paths relative to this file (gateway/alchemy/)
+const GATEWAY_DIR = path.resolve(__dirname, "..");
+const CHANNELS_DIR = path.resolve(__dirname, "../../channels");
+
 export type GsvInfraOptions = {
   /** Unique name prefix (use random suffix for tests) */
   name: string;
@@ -44,7 +48,7 @@ export type GsvInfraOptions = {
 export async function createGsvInfra(opts: GsvInfraOptions) {
   const { 
     name, 
-    entrypoint = "src/index.ts", 
+    entrypoint = path.join(GATEWAY_DIR, "src/index.ts"), 
     url = false, 
     withTestChannel = false,
     withWhatsApp = false,
@@ -86,7 +90,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
   if (withTestChannel) {
     testChannel = await Worker(`${name}-test-channel`, {
       name: `${name}-test-channel`,
-      entrypoint: "../channels/test/src/index.ts",
+      entrypoint: path.join(CHANNELS_DIR, "test/src/index.ts"),
       adopt: true,
       bindings: {
         // Queue for sending inbound messages to Gateway (producer binding)
@@ -108,7 +112,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
   if (withWhatsApp) {
     whatsappChannel = await Worker(`${name}-channel-whatsapp`, {
       name: `${name}-channel-whatsapp`,
-      entrypoint: "../channels/whatsapp/src/index.ts",
+      entrypoint: path.join(CHANNELS_DIR, "whatsapp/src/index.ts"),
       adopt: true,
       bindings: {
         WHATSAPP_ACCOUNT: DurableObjectNamespace("whatsapp-account", {
@@ -124,8 +128,8 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
       compatibilityFlags: ["nodejs_compat"],
       bundle: {
         alias: {
-          "ws": "../channels/whatsapp/src/ws-shim.ts",
-          "axios": "../channels/whatsapp/src/axios-shim.ts",
+          "ws": path.join(CHANNELS_DIR, "whatsapp/src/ws-shim.ts"),
+          "axios": path.join(CHANNELS_DIR, "whatsapp/src/axios-shim.ts"),
         },
       },
     });
@@ -137,7 +141,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
   if (withDiscord) {
     discordChannel = await Worker(`${name}-channel-discord`, {
       name: `${name}-channel-discord`,
-      entrypoint: "../channels/discord/src/index.ts",
+      entrypoint: path.join(CHANNELS_DIR, "discord/src/index.ts"),
       adopt: true,
       bindings: {
         DISCORD_GATEWAY: DurableObjectNamespace("discord-gateway", {

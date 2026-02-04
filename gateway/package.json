@@ -5,8 +5,9 @@
 	"type": "module",
 	"scripts": {
 		"deploy": "wrangler deploy",
-		"deploy:alchemy": "npx tsx alchemy/deploy.ts",
-		"destroy": "npx tsx alchemy/destroy.ts",
+		"deploy:alchemy": "bun alchemy/deploy.ts",
+		"deploy:wizard": "bun alchemy/wizard/bin.ts",
+		"destroy": "bun alchemy/destroy.ts",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
@@ -24,7 +25,9 @@
 		"wrangler": "^4.61.1"
 	},
 	"dependencies": {
+		"@clack/prompts": "^1.0.0",
 		"@mariozechner/pi-ai": "^0.50.5",
+		"picocolors": "^1.1.1",
 		"ws": "^8.19.0"
 	}
 }
