@@ -7,12 +7,13 @@ Core platform is working:
 - Multi-provider LLM (Anthropic, OpenAI, Google via pi-ai)
 - Rust CLI with tool namespacing (`macbook__Bash`, `server__Read`)
 - WhatsApp channel (media, voice transcription, pairing flow)
+- Discord channel
 - Agent workspace (SOUL.md, AGENTS.md, USER.md, MEMORY.md, skills)
 - Session management (reset, compact, archive, token tracking)
 - Slash commands (`/model`, `/think`, `/status`, `/help`, `/reset`, `/compact`)
 - Heartbeat system (basic), typing indicators, message queue
 - R2 FUSE mount for local workspace editing
-- Installation via `install.sh` + Alchemy deployment
+- **Deployment wizard** - Interactive setup with WS config, CLI install, updated models
 
 ---
 
@@ -20,8 +21,9 @@ Core platform is working:
 
 | Feature | OpenClaw | GSV | Priority |
 |---------|----------|-----|----------|
-| **Onboarding Wizard** | Interactive wizard with "hatching" | `install.sh` + manual config | High |
-| **Multiple Channels** | WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams | WhatsApp only | High |
+| **Onboarding Wizard** | Interactive wizard with "hatching" | ✅ Deployment wizard done | Done |
+| **Commissioning Ceremony** | Agent names itself, learns user | BOOTSTRAP.md template exists | High |
+| **Multiple Channels** | WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams | WhatsApp + Discord | Medium |
 | **Web UI** | Full dashboard served by Gateway | None | High |
 | **PDF/Document Support** | Text extraction + image fallback | Placeholder text (no extraction yet) | Medium |
 | **Run Cancellation** | `/stop` works | Done | Done |
@@ -93,7 +95,7 @@ interface ChannelPlugin {
 
 ---
 
-### Phase 3: Web UI
+### Phase 3: Web UI & Commissioning
 
 #### 8. Basic Web Dashboard
 Served directly from Gateway Worker:
@@ -102,13 +104,35 @@ Served directly from Gateway Worker:
 - Real-time chat interface
 - Token usage stats
 
-#### 9. Onboarding Wizard
-Guided setup experience:
-1. Cloudflare auth (OAuth or API token)
-2. Deploy Gateway + R2
-3. Configure LLM provider
-4. Optional: Add channels
-5. "Hatch" - first message with BOOTSTRAP.md
+#### 9. Commissioning Ceremony (Culture Ship Naming)
+The "hatching" experience, GSV-style:
+
+**How it works:**
+1. On first message to a fresh workspace, agent detects BOOTSTRAP.md
+2. Agent introduces itself as a new Mind without a name
+3. Together with user, chooses:
+   - **Ship name** - Culture-style (*Experiencing A Significant Gravitas Shortfall*, *Mistake Not...*, *So Much For Subtlety*)
+   - **Ship class** - GSV, GCU, ROU, or something new
+   - **Personality** - Warm? Sharp? Chaotic? Quietly competent?
+   - **Signature emoji**
+4. Updates SOUL.md with chosen identity
+5. Learns about the user, updates USER.md
+6. Deletes BOOTSTRAP.md - commissioning complete
+
+**Example ship names for inspiration:**
+- *Falling Outside The Normal Moral Constraints*
+- *Of Course I Still Love You*
+- *Just Read The Instructions*
+- *Lightly Seared On The Reality Grill*
+- *Sense Amid Madness, Wit Amidst Folly*
+- *What Are The Alarm Bells For*
+
+**Implementation:**
+- [ ] Detect fresh workspace (BOOTSTRAP.md exists, SOUL.md is default)
+- [ ] Agent reads BOOTSTRAP.md, follows the ceremony
+- [ ] Write tool to update SOUL.md/USER.md from workspace
+- [ ] Delete BOOTSTRAP.md when done
+- [ ] Consider: show this in wizard as final step?
 
 ---
 
