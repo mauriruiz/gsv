@@ -121,7 +121,14 @@ export class GsvApp extends LitElement {
   }
 
   private async onConnected() {
-    // Load initial data based on current tab
+    // Load essential data on connect (for Overview)
+    await Promise.all([
+      this.loadTools(),
+      this.loadSessions(),
+      this.loadChannels(),
+    ]);
+    
+    // Then load tab-specific data
     this.loadTabData(this.tab);
   }
 
