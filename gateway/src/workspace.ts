@@ -24,6 +24,7 @@ export type AgentWorkspace = {
   user?: WorkspaceFile;     // USER.md
   memory?: WorkspaceFile;   // MEMORY.md (only in main session)
   tools?: WorkspaceFile;    // TOOLS.md
+  bootstrap?: WorkspaceFile; // BOOTSTRAP.md (first-run commissioning)
   dailyMemory?: WorkspaceFile; // memory/YYYY-MM-DD.md
   yesterdayMemory?: WorkspaceFile; // memory/YYYY-MM-DD.md (yesterday)
   skills?: SkillSummary[];  // Available skills
@@ -224,11 +225,12 @@ export async function loadAgentWorkspace(
   const basePath = `agents/${agentId}`;
   
   // Load core files in parallel
-  const [agents, soul, user, tools] = await Promise.all([
+  const [agents, soul, user, tools, bootstrap] = await Promise.all([
     loadR2File(bucket, `${basePath}/AGENTS.md`),
     loadR2File(bucket, `${basePath}/SOUL.md`),
     loadR2File(bucket, `${basePath}/USER.md`),
     loadR2File(bucket, `${basePath}/TOOLS.md`),
+    loadR2File(bucket, `${basePath}/BOOTSTRAP.md`),
   ]);
 
   const workspace: AgentWorkspace = {
@@ -237,6 +239,7 @@ export async function loadAgentWorkspace(
     soul: soul.exists ? soul : undefined,
     user: user.exists ? user : undefined,
     tools: tools.exists ? tools : undefined,
+    bootstrap: bootstrap.exists ? bootstrap : undefined,
   };
 
   // Load MEMORY.md only in main session (security: contains personal context)
@@ -275,7 +278,10 @@ export async function loadAgentWorkspace(
 /**
  * Build a system prompt from workspace files
  * 
- * Order:
+ * Order (when BOOTSTRAP.md exists - first run):
+ * 1. BOOTSTRAP.md - Commissioning ceremony (takes over)
+ * 
+ * Order (normal operation):
  * 1. Base system prompt (from config)
  * 2. SOUL.md - Who you are
  * 3. USER.md - Who you're helping
@@ -290,6 +296,26 @@ export function buildSystemPromptFromWorkspace(
 ): string {
   const sections: string[] = [];
 
+  // BOOTSTRAP.md - First run commissioning ceremony
+  // When present, this takes priority - the agent needs to establish identity first
+  if (workspace.bootstrap?.exists) {
+    sections.push(`## COMMISSIONING CEREMONY (First Run)\n\n**IMPORTANT: BOOTSTRAP.md exists. This is your first activation. Follow the commissioning ceremony below before doing anything else.**\n\n${workspace.bootstrap.content}`);
+    
+    // Still include SOUL.md if it exists (might have defaults)
+    if (workspace.soul?.exists) {
+      sections.push(`## Current Identity (defaults - update during commissioning)\n\n${workspace.soul.content}`);
+    }
+    
+    // Include basic info about the human if known
+    if (workspace.user?.exists) {
+      sections.push(`## About Your Human\n\n${workspace.user.content}`);
+    }
+    
+    return sections.join("\n\n---\n\n");
+  }
+
+  // Normal operation (no BOOTSTRAP.md)
+  
   // Base system prompt
   if (basePrompt?.trim()) {
     sections.push(basePrompt.trim());
@@ -382,6 +408,32 @@ export async function writeWorkspaceFile(
     },
   });
   console.log(`[Workspace] Wrote ${path} (${content.length} bytes)`);
+}
+
+/**
+ * Delete a file from the agent's workspace in R2
+ */
+export async function deleteWorkspaceFile(
+  bucket: R2Bucket,
+  agentId: string,
+  relativePath: string,
+): Promise<boolean> {
+  const path = `agents/${agentId}/${relativePath}`;
+  await bucket.delete(path);
+  console.log(`[Workspace] Deleted ${path}`);
+  return true;
+}
+
+/**
+ * Check if BOOTSTRAP.md exists (agent is uncommissioned)
+ */
+export async function isUncommissioned(
+  bucket: R2Bucket,
+  agentId: string,
+): Promise<boolean> {
+  const path = `agents/${agentId}/BOOTSTRAP.md`;
+  const obj = await bucket.head(path);
+  return obj !== null;
 }
 
 /**
