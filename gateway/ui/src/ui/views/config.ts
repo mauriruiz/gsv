@@ -4,6 +4,7 @@
 
 import { html, nothing } from "lit";
 import type { GsvApp } from "../app";
+import { getGatewayUrl } from "../storage";
 
 // Config types matching gateway/src/config.ts
 type GsvConfig = {
@@ -106,12 +107,17 @@ function renderConnectionSection(app: GsvApp) {
           <input 
             type="text" 
             class="form-input mono"
+            placeholder=${getGatewayUrl(app.settings)}
             .value=${app.settings.gatewayUrl}
             @change=${(e: Event) => {
               app.updateSettings({ gatewayUrl: (e.target as HTMLInputElement).value });
             }}
           />
-          <p class="form-hint">WebSocket URL (e.g., ws://localhost:8787/ws or wss://your-gateway.workers.dev/ws)</p>
+          <p class="form-hint">
+            ${app.settings.gatewayUrl 
+              ? "Custom WebSocket URL" 
+              : `Auto-derived from page URL: ${getGatewayUrl(app.settings)}`}
+          </p>
         </div>
         
         <div class="form-group">

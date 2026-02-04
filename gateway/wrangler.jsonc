@@ -43,6 +43,11 @@
 	"ai": {
 		"binding": "AI"
 	},
+	// Static Assets - serve UI from Gateway
+	"assets": {
+		"directory": "./ui/dist/",
+		"binding": "ASSETS"
+	},
 	// Channel service bindings (Gateway → Channel RPC)
 	"services": [
 		{

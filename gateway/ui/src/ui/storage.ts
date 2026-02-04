@@ -11,12 +11,30 @@ export type UiSettings = {
 
 const STORAGE_KEY = "gsv-ui-settings";
 
+/**
+ * Derive default WebSocket URL from current page location
+ * - Same host as UI, but /ws path
+ * - Switch protocol: https→wss, http→ws
+ */
+function deriveGatewayUrl(): string {
+  const loc = window.location;
+  const protocol = loc.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${loc.host}/ws`;
+}
+
 const DEFAULT_SETTINGS: UiSettings = {
-  gatewayUrl: "ws://localhost:8787/ws",
+  gatewayUrl: "", // Empty means "use derived URL"
   token: "",
   sessionKey: "agent:main:web:dm:local",
   theme: "dark",
 };
+
+/**
+ * Get effective gateway URL (derived if not explicitly set)
+ */
+export function getGatewayUrl(settings: UiSettings): string {
+  return settings.gatewayUrl || deriveGatewayUrl();
+}
 
 export function loadSettings(): UiSettings {
   try {

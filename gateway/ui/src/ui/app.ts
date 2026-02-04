@@ -5,7 +5,7 @@
 import { LitElement, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { GatewayClient, type ConnectionState } from "./gateway-client";
-import { loadSettings, saveSettings, applyTheme, type UiSettings } from "./storage";
+import { loadSettings, saveSettings, applyTheme, getGatewayUrl, type UiSettings } from "./storage";
 import { navigateTo, getCurrentTab, tabFromPath } from "./navigation";
 import type {
   Tab,
@@ -106,7 +106,7 @@ export class GsvApp extends LitElement {
     }
 
     this.client = new GatewayClient({
-      url: this.settings.gatewayUrl,
+      url: getGatewayUrl(this.settings),
       token: this.settings.token || undefined,
       onStateChange: (state) => {
         this.connectionState = state;
