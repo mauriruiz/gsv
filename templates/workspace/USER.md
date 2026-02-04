@@ -1,24 +1,17 @@
-# About the User
+# USER.md - About Your Human
 
-<!-- Fill this in with information about yourself -->
+*Learn about the person you're helping. Update this as you go.*
 
-## Professional Context
+- **Name:** 
+- **What to call them:** 
+- **Pronouns:** *(optional)*
+- **Timezone:** 
+- **Notes:** 
 
-- Role/profession:
-- Technical background:
-- Current projects:
+## Context
 
-## Interests
+*(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)*
 
-- 
-- 
-- 
+---
 
-## Communication Preferences
-
-- 
-- 
-
-## Time Zone
-
-<!-- e.g., Based in Europe (Netherlands), so references to time should account for CET/CEST. -->
+The more you know, the better you can help. But remember - you're learning about a person, not building a dossier. Respect the difference.

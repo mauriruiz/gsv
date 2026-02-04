@@ -31,6 +31,10 @@ import {
   isMainSession,
   type AgentWorkspace,
 } from "./workspace";
+import {
+  isWorkspaceTool,
+  executeWorkspaceTool,
+} from "./workspace-tools";
 
 type PendingToolCall = {
   id: string;
@@ -1049,9 +1053,11 @@ export class Session extends DurableObject<Env> {
     const loaded = [
       workspace.agents?.exists && "AGENTS.md",
       workspace.soul?.exists && "SOUL.md",
+      workspace.identity?.exists && "IDENTITY.md",
       workspace.user?.exists && "USER.md",
       workspace.memory?.exists && "MEMORY.md",
       workspace.tools?.exists && "TOOLS.md",
+      workspace.bootstrap?.exists && "BOOTSTRAP.md",
       workspace.dailyMemory?.exists && "daily",
       workspace.yesterdayMemory?.exists && "yesterday",
     ].filter(Boolean);
@@ -1089,6 +1095,30 @@ export class Session extends DurableObject<Env> {
 
     this.pendingToolCalls[toolCall.id] = toolCall;
 
+    // Check if this is a workspace tool (gsv__*) - handle locally
+    if (isWorkspaceTool(toolCall.name)) {
+      // Extract agentId from session key (format: agent:{agentId}:{channel}:{peerKind}:{peerId})
+      const agentId = this.meta.sessionKey?.split(":")[1] || "main";
+      
+      console.log(`[Session] Executing workspace tool ${toolCall.name} for agent ${agentId}`);
+      
+      const result = await executeWorkspaceTool(
+        this.env.STORAGE,
+        agentId,
+        toolCall.name,
+        toolCall.args,
+      );
+      
+      if (result.ok) {
+        toolCall.result = result.result;
+      } else {
+        toolCall.error = result.error || "Workspace tool failed";
+      }
+      this.pendingToolCalls[toolCall.id] = toolCall;
+      return;
+    }
+
+    // Node tool - dispatch to Gateway for routing to appropriate node
     const gateway = this.env.GATEWAY.get(
       this.env.GATEWAY.idFromName("singleton"),
     );

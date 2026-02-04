@@ -21,6 +21,7 @@ export type AgentWorkspace = {
   agentId: string;
   agents?: WorkspaceFile;   // AGENTS.md
   soul?: WorkspaceFile;     // SOUL.md
+  identity?: WorkspaceFile; // IDENTITY.md
   user?: WorkspaceFile;     // USER.md
   memory?: WorkspaceFile;   // MEMORY.md (only in main session)
   tools?: WorkspaceFile;    // TOOLS.md
@@ -225,9 +226,10 @@ export async function loadAgentWorkspace(
   const basePath = `agents/${agentId}`;
   
   // Load core files in parallel
-  const [agents, soul, user, tools, bootstrap] = await Promise.all([
+  const [agents, soul, identity, user, tools, bootstrap] = await Promise.all([
     loadR2File(bucket, `${basePath}/AGENTS.md`),
     loadR2File(bucket, `${basePath}/SOUL.md`),
+    loadR2File(bucket, `${basePath}/IDENTITY.md`),
     loadR2File(bucket, `${basePath}/USER.md`),
     loadR2File(bucket, `${basePath}/TOOLS.md`),
     loadR2File(bucket, `${basePath}/BOOTSTRAP.md`),
@@ -237,6 +239,7 @@ export async function loadAgentWorkspace(
     agentId,
     agents: agents.exists ? agents : undefined,
     soul: soul.exists ? soul : undefined,
+    identity: identity.exists ? identity : undefined,
     user: user.exists ? user : undefined,
     tools: tools.exists ? tools : undefined,
     bootstrap: bootstrap.exists ? bootstrap : undefined,
@@ -303,7 +306,12 @@ export function buildSystemPromptFromWorkspace(
     
     // Still include SOUL.md if it exists (might have defaults)
     if (workspace.soul?.exists) {
-      sections.push(`## Current Identity (defaults - update during commissioning)\n\n${workspace.soul.content}`);
+      sections.push(`## Current Soul (update during commissioning)\n\n${workspace.soul.content}`);
+    }
+    
+    // Include IDENTITY.md template
+    if (workspace.identity?.exists) {
+      sections.push(`## Current Identity (fill in during commissioning)\n\n${workspace.identity.content}`);
     }
     
     // Include basic info about the human if known
@@ -321,9 +329,14 @@ export function buildSystemPromptFromWorkspace(
     sections.push(basePrompt.trim());
   }
 
-  // SOUL.md - Identity (most important)
+  // SOUL.md - Core values and personality
   if (workspace.soul?.exists) {
-    sections.push(`## Your Identity\n\n${workspace.soul.content}`);
+    sections.push(`## Your Soul\n\n${workspace.soul.content}`);
+  }
+
+  // IDENTITY.md - Name, class, emoji
+  if (workspace.identity?.exists) {
+    sections.push(`## Your Identity\n\n${workspace.identity.content}`);
   }
 
   // USER.md - About the human

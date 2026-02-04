@@ -227,7 +227,16 @@ async function uploadWorkspaceTemplates(
   bucket: Awaited<ReturnType<typeof R2Bucket>>,
   agentId: string = "main"
 ): Promise<void> {
-  const files = ["SOUL.md", "USER.md", "MEMORY.md", "AGENTS.md", "HEARTBEAT.md", "BOOTSTRAP.md"];
+  const files = [
+    "SOUL.md", 
+    "IDENTITY.md",
+    "USER.md", 
+    "MEMORY.md", 
+    "AGENTS.md", 
+    "TOOLS.md",
+    "HEARTBEAT.md", 
+    "BOOTSTRAP.md",
+  ];
   // Templates are at repo root: gsv/templates/workspace/
   const templatesDir = path.resolve(__dirname, "../../templates/workspace");
 

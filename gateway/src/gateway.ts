@@ -44,6 +44,7 @@ import { parseCommand, HELP_TEXT, normalizeThinkLevel, resolveModelAlias, listMo
 import { parseDirectives, isDirectiveOnly, formatDirectiveAck } from "./directives";
 import { processMediaWithTranscription } from "./transcription";
 import { processInboundMedia } from "./storage";
+import { getWorkspaceToolDefinitions } from "./workspace-tools";
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -801,14 +802,20 @@ export class Gateway extends DurableObject<Env> {
     console.log(
       `[Gateway]   toolRegistry keys: [${Object.keys(this.toolRegistry).join(", ")}]`,
     );
-    // Namespace tools as {nodeId}__{toolName}
-    const tools = Array.from(this.nodes.keys()).flatMap(
+    
+    // Start with native workspace tools (always available)
+    const workspaceTools = getWorkspaceToolDefinitions();
+    
+    // Add node tools namespaced as {nodeId}__{toolName}
+    const nodeTools = Array.from(this.nodes.keys()).flatMap(
       (nodeId) => (this.toolRegistry[nodeId] ?? []).map((tool) => ({
         ...tool,
         name: `${nodeId}__${tool.name}`,
       })),
     );
-    console.log(`[Gateway]   returning ${tools.length} tools: [${tools.map(t => t.name).join(", ")}]`);
+    
+    const tools = [...workspaceTools, ...nodeTools];
+    console.log(`[Gateway]   returning ${tools.length} tools (${workspaceTools.length} workspace + ${nodeTools.length} node): [${tools.map(t => t.name).join(", ")}]`);
     return tools;
   }
 
