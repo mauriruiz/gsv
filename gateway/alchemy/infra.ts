@@ -43,7 +43,6 @@ export type GsvInfraOptions = {
   withUI?: boolean;
   /** Secrets to configure */
   secrets?: {
-    authToken?: string;
     discordBotToken?: string;
   };
 };
@@ -144,7 +143,6 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
         }),
         // Queue for sending inbound messages to Gateway (producer binding)
         GATEWAY_QUEUE: channelInboundQueue,
-        ...(secrets.authToken ? { AUTH_TOKEN: alchemy.secret(secrets.authToken) } : {}),
       },
       url: true,
       compatibilityDate: "2025-09-21",
@@ -225,8 +223,6 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
           __entrypoint__: "DiscordChannel",
         }
       } : {}),
-      // Secrets
-      ...(secrets.authToken ? { AUTH_TOKEN: alchemy.secret(secrets.authToken) } : {}),
     },
     // Queue consumer: process inbound messages from channels
     eventSources: [{

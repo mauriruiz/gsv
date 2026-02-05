@@ -48,7 +48,6 @@ interface DeployState {
   };
   /** Secrets (only stored if user opts in) */
   secrets?: {
-    authToken?: string;
     discordBotToken?: string;
   };
   /** LLM config */
@@ -148,7 +147,6 @@ async function commandWizard(stackName: string, quick: boolean): Promise<void> {
       withUI: result.deployUI,
     },
     secrets: {
-      authToken: result.authToken,
       discordBotToken: result.channels.discordBotToken,
     },
     llm: {
@@ -238,7 +236,6 @@ async function commandUp(stackName: string): Promise<void> {
       withTemplates: state.options.withTemplates,
       withUI: state.options.withUI,
       secrets: {
-        authToken: state.secrets?.authToken,
         discordBotToken: state.secrets?.discordBotToken,
       },
     });
@@ -334,12 +331,15 @@ async function commandDestroy(stackName: string): Promise<void> {
     password = passwordInput;
   }
   
-  const spinner = p.spinner("Destroying resources...");
+  // Note: alchemy's destroy phase calls process.exit(0) internally,
+  // so we can't use a spinner (it would show "Canceled" on exit).
+  // Instead, just print a message and let alchemy handle the output.
+  console.log(pc.dim("  Destroying resources...\n"));
   
   try {
     const app = await alchemy(state.stackName, {
       phase: "destroy",
-      quiet: true,
+      quiet: false, // Let alchemy show progress since we can't
       password,
     });
     
@@ -355,13 +355,14 @@ async function commandDestroy(stackName: string): Promise<void> {
     
     await app.finalize();
     
-    spinner.stop(pc.green("Resources destroyed!"));
+    // Note: This code is never reached - alchemy exits in destroy phase
+    console.log(pc.green("\nResources destroyed!"));
     console.log("");
     console.log(pc.dim("Note: Deploy state has been kept. Run 'wizard' to deploy fresh."));
     console.log("");
     
   } catch (error) {
-    spinner.stop(pc.red("Destroy failed"));
+    console.error(pc.red("Destroy failed"));
     console.error(error);
     process.exit(1);
   }

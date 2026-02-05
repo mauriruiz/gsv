@@ -33,7 +33,7 @@ class GatewayClient {
   }>();
   private requestId = 0;
 
-  async connect(url: string, authToken: string): Promise<void> {
+  async connect(url: string, authToken?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
       
@@ -75,7 +75,7 @@ class GatewayClient {
           }
         };
         
-        // Send connect frame
+        // Send connect frame (auth is optional - may not be configured yet)
         this.sendRequest("connect", {
           minProtocol: 1,
           maxProtocol: 1,
@@ -85,7 +85,7 @@ class GatewayClient {
             platform: "bun",
             mode: "client",
           },
-          auth: { token: authToken },
+          ...(authToken ? { auth: { token: authToken } } : {}),
         })
         .then(() => settle(() => resolve()))
         .catch((err) => settle(() => reject(err)));
@@ -164,7 +164,7 @@ function sleep(ms: number): Promise<void> {
 async function connectWithRetry(
   client: GatewayClient,
   wsUrl: string,
-  authToken: string,
+  authToken: string | undefined,
   maxAttempts: number,
   delayMs: number,
   onRetry: (attempt: number, maxAttempts: number) => void,
@@ -214,17 +214,23 @@ export async function configureGateway(
     spinner.message("Waiting for Gateway to be ready...");
     await sleep(5000);
 
-    // Connect with retries (Gateway may take a moment to initialize)
+    // Connect WITHOUT auth first - fresh Gateway has no auth configured
+    // This is intentional: we set auth.token via config.set after connecting
     await connectWithRetry(
       client,
       wsUrl,
-      state.authToken,
+      undefined, // No auth token - fresh deploy
       8,    // max attempts
       5000, // delay between attempts
       (attempt, max) => {
         spinner.message(`Connecting to Gateway (attempt ${attempt + 1}/${max})...`);
       },
     );
+
+    // Set auth token FIRST - this secures the Gateway before setting other config
+    // After this point, all connections must provide this token
+    spinner.message("Setting auth token...");
+    await client.configSet("auth.token", state.authToken);
 
     // Set model provider
     spinner.message("Setting model provider...");
