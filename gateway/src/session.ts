@@ -680,6 +680,20 @@ export class Session extends DurableObject<Env> {
     );
 
     if (toolCalls.length > 0) {
+      // Check if response has text content alongside tool calls
+      // If so, broadcast it as partial before executing tools (so user sees it immediately)
+      const hasTextContent = response.content.some(
+        (block) => block.type === "text" && (block as { text?: string }).text?.trim(),
+      );
+      if (hasTextContent) {
+        await this.broadcastToClients({
+          runId: this.currentRun?.runId ?? null,
+          sessionKey: this.meta.sessionKey,
+          state: "partial",
+          message: response,
+        });
+      }
+
       // Request tool executions (fire and forget - don't await results here)
       for (const toolCall of toolCalls) {
         await this.requestToolExecution({

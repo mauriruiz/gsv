@@ -37,8 +37,6 @@ const DEPLOY_STATE_FILE = "deploy-state.json";
 interface DeployState {
   /** Stack name */
   stackName: string;
-  /** Alchemy password hash (for verification, not the actual password) */
-  passwordHash: string;
   /** Deployment options */
   options: {
     withWhatsApp: boolean;
@@ -111,16 +109,7 @@ function saveDeployState(state: DeployState): void {
   writeFileSync(join(dir, DEPLOY_STATE_FILE), JSON.stringify(state, null, 2));
 }
 
-function hashPassword(password: string): string {
-  // Simple hash for verification (not security)
-  let hash = 0;
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return hash.toString(16);
-}
+
 
 // ============================================================================
 // Commands
@@ -139,7 +128,6 @@ async function commandWizard(stackName: string, quick: boolean): Promise<void> {
   // Save state for future upgrades
   const state: DeployState = {
     stackName: result.stackName,
-    passwordHash: hashPassword(process.env.ALCHEMY_PASSWORD || ""),
     options: {
       withWhatsApp: result.channels.whatsapp,
       withDiscord: result.channels.discord,
@@ -192,40 +180,13 @@ async function commandUp(stackName: string): Promise<void> {
   }
   console.log("");
   
-  // Get password
   const p = createCliPrompter();
-  let password: string;
-  
-  if (process.env.ALCHEMY_PASSWORD) {
-    password = process.env.ALCHEMY_PASSWORD;
-    console.log(pc.dim("  Using ALCHEMY_PASSWORD from environment\n"));
-  } else {
-    const passwordInput = await p.password({
-      message: "Enter your Alchemy password",
-      validate: (value) => {
-        if (!value) return "Password required";
-        // Skip hash check if no hash stored (migrated state)
-        if (state.passwordHash && hashPassword(value) !== state.passwordHash) {
-          return "Password doesn't match previous deployment";
-        }
-      },
-    });
-    
-    if (isCancelled(passwordInput)) {
-      handleCancel();
-    }
-    
-    password = passwordInput;
-  }
-  
-  // Deploy
   const spinner = p.spinner("Deploying...");
   
   try {
     const app = await alchemy(state.stackName, {
       phase: "up",
       quiet: true,
-      password,
     });
     
     const infra = await createGsvInfra({
@@ -242,17 +203,13 @@ async function commandUp(stackName: string): Promise<void> {
     
     await app.finalize();
     
-    // Update state with new URLs and password hash
+    // Update state with new URLs
     state.urls = {
       gateway: await infra.gateway.url,
       whatsapp: infra.whatsappChannel ? await infra.whatsappChannel.url : undefined,
       discord: infra.discordChannel ? await infra.discordChannel.url : undefined,
     };
     state.deployedAt = new Date().toISOString();
-    // Store password hash for future verification (if not already set)
-    if (!state.passwordHash) {
-      state.passwordHash = hashPassword(password);
-    }
     saveDeployState(state);
     
     spinner.stop(pc.green("Deployed successfully!"));
@@ -311,26 +268,6 @@ async function commandDestroy(stackName: string): Promise<void> {
     process.exit(0);
   }
   
-  // Get password
-  let password: string;
-  
-  if (process.env.ALCHEMY_PASSWORD) {
-    password = process.env.ALCHEMY_PASSWORD;
-  } else {
-    const passwordInput = await p.password({
-      message: "Enter your Alchemy password",
-      validate: (value) => {
-        if (!value) return "Password required";
-      },
-    });
-    
-    if (isCancelled(passwordInput)) {
-      handleCancel();
-    }
-    
-    password = passwordInput;
-  }
-  
   // Note: alchemy's destroy phase calls process.exit(0) internally,
   // so we can't use a spinner (it would show "Canceled" on exit).
   // Instead, just print a message and let alchemy handle the output.
@@ -340,7 +277,6 @@ async function commandDestroy(stackName: string): Promise<void> {
     const app = await alchemy(state.stackName, {
       phase: "destroy",
       quiet: false, // Let alchemy show progress since we can't
-      password,
     });
     
     // Need to "create" resources so alchemy knows what to destroy
@@ -450,7 +386,6 @@ ${pc.bold("Examples:")}
   bun alchemy/cli.ts status
 
 ${pc.bold("Environment Variables:")}
-  ALCHEMY_PASSWORD    Deployment password (skip prompt)
   DISCORD_BOT_TOKEN   Discord bot token
   ANTHROPIC_API_KEY   Anthropic API key
 `);

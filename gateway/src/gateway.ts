@@ -1964,6 +1964,16 @@ export class Gateway extends DurableObject<Env> {
       }
     }
 
+    // Handle partial state: route text to channel but keep context for final response
+    if (payload.state === "partial" && payload.message) {
+      const channelContext = this.pendingChannelResponses[sessionKey];
+      if (channelContext) {
+        // Route partial text to channel (e.g., "Let me check..." before tool execution)
+        this.routeToChannel(sessionKey, channelContext, payload);
+        // Don't delete context - we'll need it for the final response
+      }
+    }
+
     // Handle final state: route to channel and stop typing indicator
     if (payload.state === "final" || payload.state === "error") {
       const channelContext = this.pendingChannelResponses[sessionKey];

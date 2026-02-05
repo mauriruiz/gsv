@@ -12,7 +12,7 @@ import { modeStep } from "./steps/mode";
 import { authStep } from "./steps/auth";
 import { providerStep } from "./steps/provider";
 import { channelsStep } from "./steps/channels";
-import { deployStep, hasAlchemyState, setAlchemyPassword } from "./steps/deploy";
+import { deployStep } from "./steps/deploy";
 import { channelSetupStep } from "./steps/channel-setup";
 import { saveCliConfig } from "./steps/cli-config";
 import { configureGateway } from "./steps/gateway-config";
@@ -148,35 +148,6 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardStat
   if (isCancelled(proceed) || !proceed) {
     p.outro("Deployment cancelled.");
     return null;
-  }
-
-  // Handle Alchemy password before deployment
-  if (process.env.ALCHEMY_PASSWORD) {
-    p.log(`Using ALCHEMY_PASSWORD from environment`);
-    setAlchemyPassword(process.env.ALCHEMY_PASSWORD);
-  } else {
-    const isUpdate = hasAlchemyState();
-    
-    const password = await p.password({
-      message: isUpdate 
-        ? "Enter your Alchemy password (same as original deployment)"
-        : "Choose an Alchemy password (for future updates)",
-      validate: (value) => {
-        if (!value || value.length < 8) {
-          return "Password must be at least 8 characters";
-        }
-      },
-    });
-    
-    if (isCancelled(password)) {
-      handleCancel();
-    }
-    
-    setAlchemyPassword(password);
-    
-    if (!isUpdate) {
-      p.log(`${pc.dim("Tip: Set ALCHEMY_PASSWORD env var to skip this prompt")}`);
-    }
   }
 
   // Step 7: Deploy

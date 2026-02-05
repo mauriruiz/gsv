@@ -4,7 +4,6 @@
  * This file defines the Cloudflare resources for GSV using Alchemy.
  * Can be used for both deployments and e2e testing.
  */
-import alchemy from "alchemy";
 import {
   Worker,
   WorkerStub,
@@ -70,6 +69,8 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
   if (withTemplates) {
     console.log("📁 Uploading workspace templates...");
     await uploadWorkspaceTemplates(storage);
+    console.log("📚 Uploading skill templates...");
+    await uploadSkillTemplates(storage);
   }
 
   // Build and create assets for web UI
@@ -171,7 +172,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
         }),
         // Queue for sending inbound messages to Gateway (producer binding)
         GATEWAY_QUEUE: channelInboundQueue,
-        ...(secrets.discordBotToken ? { DISCORD_BOT_TOKEN: alchemy.secret(secrets.discordBotToken) } : {}),
+        ...(secrets.discordBotToken ? { DISCORD_BOT_TOKEN: secrets.discordBotToken } : {}),
       },
       url: true,
       compatibilityDate: "2025-02-11",
@@ -272,6 +273,45 @@ async function uploadWorkspaceTemplates(
     const key = `agents/${agentId}/${file}`;
 
     await R2Object(`template-${agentId}-${file}`, {
+      bucket,
+      key,
+      content,
+    });
+
+    console.log(`   Uploaded ${key}`);
+  }
+}
+
+/**
+ * Upload skill templates to R2 bucket (global skills)
+ */
+async function uploadSkillTemplates(
+  bucket: Awaited<ReturnType<typeof R2Bucket>>,
+): Promise<void> {
+  // Skills are at repo root: gsv/templates/skills/
+  const skillsDir = path.resolve(__dirname, "../../templates/skills");
+  
+  if (!fs.existsSync(skillsDir)) {
+    console.warn("   Skills directory not found");
+    return;
+  }
+
+  // List all skill directories
+  const skillDirs = fs.readdirSync(skillsDir, { withFileTypes: true })
+    .filter(dirent => dirent.isDirectory())
+    .map(dirent => dirent.name);
+
+  for (const skillName of skillDirs) {
+    const skillFile = path.join(skillsDir, skillName, "SKILL.md");
+    if (!fs.existsSync(skillFile)) {
+      console.warn(`   Skill missing SKILL.md: ${skillName}`);
+      continue;
+    }
+
+    const content = fs.readFileSync(skillFile, "utf-8");
+    const key = `skills/${skillName}/SKILL.md`;
+
+    await R2Object(`skill-${skillName}`, {
       bucket,
       key,
       content,

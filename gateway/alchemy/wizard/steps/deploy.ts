@@ -9,8 +9,7 @@ import type { WizardState } from "../types";
 import { createGsvInfra } from "../../infra";
 import alchemy from "alchemy";
 import pc from "picocolors";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+
 
 export interface DeploymentResult {
   success: boolean;
@@ -20,30 +19,7 @@ export interface DeploymentResult {
   error?: string;
 }
 
-/**
- * Check if Alchemy state exists
- */
-export function hasAlchemyState(): boolean {
-  const stateDir = join(process.cwd(), ".alchemy");
-  return existsSync(stateDir);
-}
 
-/**
- * Set Alchemy encryption password
- */
-export function setAlchemyPassword(password: string): void {
-  process.env.ALCHEMY_PASSWORD = password;
-}
-
-/**
- * Get Alchemy password from env or throw if needed
- */
-function getAlchemyPassword(): string {
-  if (!process.env.ALCHEMY_PASSWORD) {
-    throw new Error("ALCHEMY_PASSWORD not set - call setAlchemyPassword first");
-  }
-  return process.env.ALCHEMY_PASSWORD;
-}
 
 export async function deployStep(
   p: Prompter,
@@ -52,15 +28,12 @@ export async function deployStep(
   const spinner = p.spinner("Initializing Alchemy...");
 
   try {
-    // Get password (should have been set by handleAlchemyPassword in wizard)
-    const alchemyPassword = getAlchemyPassword();
-    
     // Initialize Alchemy app
+    // No password needed - we don't use alchemy.secret() for any values
     const app = await alchemy(state.stackName, {
       stage: process.env.USER || "default",
       phase: process.argv.includes("--destroy") ? "destroy" : "up",
       quiet: true,  // Suppress Alchemy's own output
-      password: alchemyPassword,
     });
 
     spinner.message("Deploying infrastructure...");
@@ -74,7 +47,6 @@ export async function deployStep(
       withTemplates: state.deployTemplates,
       withUI: state.deployUI,
       secrets: {
-        authToken: state.authToken,
         discordBotToken: state.channels.discordBotToken,
       },
     });
