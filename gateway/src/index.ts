@@ -7,7 +7,7 @@ import type {
   ChannelQueueMessage,
 } from "./channel-interface";
 
-export { Gateway } from "./gateway";
+export { Gateway } from "./gateway/do";
 export { Session } from "./session";
 
 // Re-export channel interface types

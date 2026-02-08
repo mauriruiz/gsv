@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { normalizeE164, isAllowedSender, resolveLinkedIdentity, type GsvConfig, DEFAULT_CONFIG } from "./config";
+import {
+  normalizeE164,
+  isAllowedSender,
+  resolveLinkedIdentity,
+} from "./parsing";
+import { type GsvConfig } from ".";
+import { DEFAULT_CONFIG } from "./defaults";
 
 describe("normalizeE164", () => {
   it("handles E.164 format with plus", () => {
@@ -61,7 +67,11 @@ describe("isAllowedSender", () => {
     });
 
     it("normalizes sender ID for comparison", () => {
-      const result = isAllowedSender(baseConfig, "whatsapp", "31628552611@s.whatsapp.net");
+      const result = isAllowedSender(
+        baseConfig,
+        "whatsapp",
+        "31628552611@s.whatsapp.net",
+      );
       expect(result.allowed).toBe(true);
     });
 
@@ -140,49 +150,85 @@ describe("resolveLinkedIdentity", () => {
   };
 
   it("returns null when no identity links configured", () => {
-    const result = resolveLinkedIdentity(DEFAULT_CONFIG, "whatsapp", "+31628552611");
+    const result = resolveLinkedIdentity(
+      DEFAULT_CONFIG,
+      "whatsapp",
+      "+31628552611",
+    );
     expect(result).toBeNull();
   });
 
   it("matches phone number without channel prefix", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "+31628552611");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "+31628552611",
+    );
     expect(result).toBe("steve");
   });
 
   it("matches phone number in WhatsApp JID format", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "31628552611@s.whatsapp.net");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "31628552611@s.whatsapp.net",
+    );
     expect(result).toBe("steve");
   });
 
   it("matches channel-prefixed identity", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "telegram", "123456789");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "telegram",
+      "123456789",
+    );
     expect(result).toBe("steve");
   });
 
   it("matches channel-prefixed identity with phone number", () => {
     // whatsapp:+34675706329 should only match whatsapp channel
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "+34675706329");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "+34675706329",
+    );
     expect(result).toBe("steve");
   });
 
   it("does not match channel-prefixed identity on wrong channel", () => {
     // telegram:123456789 should not match on whatsapp channel
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "123456789");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "123456789",
+    );
     expect(result).toBeNull();
   });
 
   it("returns null for unknown identity", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "+9999999999");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "+9999999999",
+    );
     expect(result).toBeNull();
   });
 
   it("matches different users", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "whatsapp", "+1555123456");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "whatsapp",
+      "+1555123456",
+    );
     expect(result).toBe("alice");
   });
 
   it("is case-insensitive for channel names", () => {
-    const result = resolveLinkedIdentity(configWithLinks, "TELEGRAM", "123456789");
+    const result = resolveLinkedIdentity(
+      configWithLinks,
+      "TELEGRAM",
+      "123456789",
+    );
     expect(result).toBe("steve");
   });
 });

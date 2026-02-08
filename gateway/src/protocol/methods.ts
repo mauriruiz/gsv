@@ -1,6 +1,6 @@
 import { GsvConfig, PendingPair } from "../config";
 import type { ChannelAccountStatus } from "../channel-interface";
-import type { Gateway } from "../gateway";
+import type { Gateway } from "../gateway/do";
 import {
   ResetPolicy,
   ResetResult,

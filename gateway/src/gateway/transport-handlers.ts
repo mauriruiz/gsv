@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import type { EventFrame, RequestFrame } from "../protocol/frames";
-import type { Gateway } from "../gateway";
+import type { Gateway } from "./do";
 import type { ChannelId } from "../protocol/channel";
 import type {
   ConnectParams,

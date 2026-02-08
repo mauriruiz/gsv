@@ -1,42 +1,44 @@
 import { DurableObject, env } from "cloudflare:workers";
-import { PersistedObject } from "./shared/persisted-object";
+import { PersistedObject } from "../shared/persisted-object";
 import {
   Frame,
   RequestFrame,
   EventFrame,
   ErrorShape,
   ResponseFrame,
-} from "./protocol/frames";
+} from "../protocol/frames";
 import {
   ToolDefinition,
   ToolRequestParams,
   ToolInvokePayload,
   ChatEventPayload,
   SessionRegistryEntry,
-} from "./types";
+} from "../types";
 import type {
   ChannelWorkerInterface,
   ChannelOutboundMessage,
   ChannelPeer,
-} from "./channel-interface";
+} from "../channel-interface";
 import {
   isWebSocketRequest,
   validateFrame,
   isWsConnected,
   toErrorShape,
-} from "./shared/utils";
+} from "../shared/utils";
+import { DEFAULT_CONFIG } from "../config/defaults";
 import {
   GsvConfig,
   GsvConfigInput,
-  DEFAULT_CONFIG,
   mergeConfig,
-  resolveAgentIdFromBinding,
   HeartbeatConfig,
-  isAllowedSender,
   PendingPair,
+} from "../config";
+import {
+  resolveAgentIdFromBinding,
+  isAllowedSender,
   normalizeE164,
   resolveLinkedIdentity,
-} from "./config";
+} from "../config/parsing";
 import {
   HeartbeatState,
   getHeartbeatConfig,
@@ -45,22 +47,22 @@ import {
   shouldDeliverResponse,
   HeartbeatResult,
 } from "./heartbeat";
-import { loadHeartbeatFile, isHeartbeatFileEmpty } from "./workspace";
+import { loadHeartbeatFile, isHeartbeatFileEmpty } from "../workspace";
 import {
   parseCommand,
   HELP_TEXT,
   normalizeThinkLevel,
   resolveModelAlias,
   listModelAliases,
-} from "./commands";
+} from "../commands";
 import {
   parseDirectives,
   isDirectiveOnly,
   formatDirectiveAck,
-} from "./directives";
-import { processMediaWithTranscription } from "./transcription";
-import { processInboundMedia } from "./storage";
-import { getWorkspaceToolDefinitions } from "./workspace-tools";
+} from "../directives";
+import { processMediaWithTranscription } from "../transcription";
+import { processInboundMedia } from "../storage";
+import { getWorkspaceToolDefinitions } from "../workspace-tools";
 import type {
   ChannelRegistryEntry,
   ChannelId,
@@ -68,15 +70,14 @@ import type {
   ChannelInboundParams,
   ChannelOutboundPayload,
   ChannelTypingPayload,
-} from "./protocol/channel";
-import { Handler, RpcMethod } from "./protocol/methods";
-import { buildRpcHandlers } from "./gateway/rpc-handlers/";
+} from "../protocol/channel";
+import { Handler, RpcMethod } from "../protocol/methods";
+import { buildRpcHandlers } from "./rpc-handlers/";
 import {
   DEFER_RESPONSE,
   buildTransportHandlers,
   type TransportMethod,
-  type TransportHandler,
-} from "./gateway/transport-handlers";
+} from "./transport-handlers";
 
 export type PendingToolRoute =
   | { kind: "session"; sessionKey: string }

@@ -1,4 +1,4 @@
-import { normalizeE164 } from "../../config";
+import { normalizeE164 } from "../../config/parsing";
 import type { Handler } from "../../protocol/methods";
 import { RpcError } from "../../shared/utils";
 
