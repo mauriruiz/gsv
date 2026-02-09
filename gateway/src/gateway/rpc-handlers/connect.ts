@@ -27,11 +27,21 @@ export const handleConnect: Handler<"connect"> = (ctx) => {
   attachments = { ...attachments, connected: true, mode };
 
   if (mode === "client") {
+    const existingWs = gw.clients.get(params.client.id);
+    if (existingWs && existingWs !== ws) {
+      existingWs.close(1000, "Replaced by newer client connection");
+    }
+
     attachments.clientId = params.client.id;
     gw.clients.set(params.client.id, ws);
     console.log(`[Gateway] Client connected: ${params.client.id}`);
   } else if (mode === "node") {
     const nodeId = params.client.id;
+    const existingWs = gw.nodes.get(nodeId);
+    if (existingWs && existingWs !== ws) {
+      existingWs.close(1000, "Replaced by newer node connection");
+    }
+
     attachments.nodeId = nodeId;
     gw.nodes.set(nodeId, ws);
     // Store tools with their original names (namespacing happens in getAllTools)
@@ -46,6 +56,11 @@ export const handleConnect: Handler<"connect"> = (ctx) => {
       throw new RpcError(103, "Channel mode requires channel field");
     }
     const channelKey = `${channel}:${accountId}`;
+    const existingWs = gw.channels.get(channelKey);
+    if (existingWs && existingWs !== ws) {
+      existingWs.close(1000, "Replaced by newer channel connection");
+    }
+
     attachments.channelKey = channelKey;
     attachments.channel = channel;
     attachments.accountId = accountId;

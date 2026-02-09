@@ -1,6 +1,6 @@
 /**
  * GSV Gateway Infrastructure Definition
- * 
+ *
  * This file defines the Cloudflare resources for GSV using Alchemy.
  * Can be used for both deployments and e2e testing.
  */
@@ -48,10 +48,10 @@ export type GsvInfraOptions = {
 };
 
 export async function createGsvInfra(opts: GsvInfraOptions) {
-  const { 
-    name, 
-    entrypoint = path.join(GATEWAY_DIR, "src/index.ts"), 
-    url = false, 
+  const {
+    name,
+    entrypoint = path.join(GATEWAY_DIR, "src/index.ts"),
+    url = false,
     withTestChannel = false,
     withWhatsApp = false,
     withDiscord = false,
@@ -80,13 +80,13 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
     console.log("🎨 Building web UI...");
     const uiDir = path.join(GATEWAY_DIR, "ui");
     const { execSync } = await import("node:child_process");
-    
+
     // Install dependencies and build
-    execSync("npm install && npm run build", { 
-      cwd: uiDir, 
-      stdio: "inherit" 
+    execSync("npm install && npm run build", {
+      cwd: uiDir,
+      stdio: "inherit",
     });
-    
+
     uiAssets = await Assets({
       path: path.join(uiDir, "dist"),
     });
@@ -110,7 +110,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
 
   // Optional test channel for e2e testing
   let testChannel: Awaited<ReturnType<typeof Worker>> | undefined;
-  
+
   if (withTestChannel) {
     testChannel = await Worker(`${name}-test-channel`, {
       name: `${name}-test-channel`,
@@ -132,7 +132,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
 
   // Deploy WhatsApp channel
   let whatsappChannel: Awaited<ReturnType<typeof Worker>> | undefined;
-  
+
   if (withWhatsApp) {
     whatsappChannel = await Worker(`${name}-channel-whatsapp`, {
       name: `${name}-channel-whatsapp`,
@@ -151,8 +151,8 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
       compatibilityFlags: ["nodejs_compat"],
       bundle: {
         alias: {
-          "ws": path.join(CHANNELS_DIR, "whatsapp/src/ws-shim.ts"),
-          "axios": path.join(CHANNELS_DIR, "whatsapp/src/axios-shim.ts"),
+          ws: path.join(CHANNELS_DIR, "whatsapp/src/ws-shim.ts"),
+          axios: path.join(CHANNELS_DIR, "whatsapp/src/axios-shim.ts"),
         },
       },
     });
@@ -160,7 +160,7 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
 
   // Deploy Discord channel
   let discordChannel: Awaited<ReturnType<typeof Worker>> | undefined;
-  
+
   if (withDiscord) {
     discordChannel = await Worker(`${name}-channel-discord`, {
       name: `${name}-channel-discord`,
@@ -173,7 +173,9 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
         }),
         // Queue for sending inbound messages to Gateway (producer binding)
         GATEWAY_QUEUE: channelInboundQueue,
-        ...(secrets.discordBotToken ? { DISCORD_BOT_TOKEN: secrets.discordBotToken } : {}),
+        ...(secrets.discordBotToken
+          ? { DISCORD_BOT_TOKEN: secrets.discordBotToken }
+          : {}),
       },
       url: true,
       compatibilityDate: "2025-02-11",
@@ -193,6 +195,9 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
     name,
     entrypoint,
     adopt: true,
+    ...(uiAssets
+      ? { assets: { not_found_handling: "single-page-application" } }
+      : {}),
     bindings: {
       AI: ai,
       GATEWAY: DurableObjectNamespace("gateway", {
@@ -208,37 +213,45 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
       ...(uiAssets ? { ASSETS: uiAssets } : {}),
       // Service bindings to channels (for outbound messages)
       // Points to channel WorkerEntrypoints for RPC methods (send, setTyping, etc.)
-      ...(withWhatsApp ? { 
-        CHANNEL_WHATSAPP: {
-          type: "service" as const,
-          service: `${name}-channel-whatsapp`,
-          __entrypoint__: "WhatsAppChannelEntrypoint",
-        }
-      } : {}),
-      ...(withTestChannel ? {
-        CHANNEL_TEST: {
-          type: "service" as const,
-          service: `${name}-test-channel`,
-          __entrypoint__: "TestChannel",
-        }
-      } : {}),
-      ...(withDiscord ? {
-        CHANNEL_DISCORD: {
-          type: "service" as const,
-          service: `${name}-channel-discord`,
-          __entrypoint__: "DiscordChannel",
-        }
-      } : {}),
+      ...(withWhatsApp
+        ? {
+            CHANNEL_WHATSAPP: {
+              type: "service" as const,
+              service: `${name}-channel-whatsapp`,
+              __entrypoint__: "WhatsAppChannelEntrypoint",
+            },
+          }
+        : {}),
+      ...(withTestChannel
+        ? {
+            CHANNEL_TEST: {
+              type: "service" as const,
+              service: `${name}-test-channel`,
+              __entrypoint__: "TestChannel",
+            },
+          }
+        : {}),
+      ...(withDiscord
+        ? {
+            CHANNEL_DISCORD: {
+              type: "service" as const,
+              service: `${name}-channel-discord`,
+              __entrypoint__: "DiscordChannel",
+            },
+          }
+        : {}),
     },
     // Queue consumer: process inbound messages from channels
-    eventSources: [{
-      queue: channelInboundQueue,
-      settings: {
-        batchSize: 1,        // Process one message at a time for minimal latency
-        maxRetries: 3,
-        maxWaitTimeMs: 0,    // Don't wait to batch, process immediately
+    eventSources: [
+      {
+        queue: channelInboundQueue,
+        settings: {
+          batchSize: 1, // Process one message at a time for minimal latency
+          maxRetries: 3,
+          maxWaitTimeMs: 0, // Don't wait to batch, process immediately
+        },
       },
-    }],
+    ],
     url,
     compatibilityDate: "2025-09-01",
     compatibilityFlags: ["nodejs_compat"],
@@ -252,16 +265,16 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
  */
 async function uploadWorkspaceTemplates(
   bucket: Awaited<ReturnType<typeof R2Bucket>>,
-  agentId: string = "main"
+  agentId: string = "main",
 ): Promise<void> {
   const files = [
-    "SOUL.md", 
+    "SOUL.md",
     "IDENTITY.md",
-    "USER.md", 
-    "MEMORY.md", 
-    "AGENTS.md", 
+    "USER.md",
+    "MEMORY.md",
+    "AGENTS.md",
     "TOOLS.md",
-    "HEARTBEAT.md", 
+    "HEARTBEAT.md",
     "BOOTSTRAP.md",
   ];
   // Templates are at repo root: gsv/templates/workspace/
@@ -295,16 +308,17 @@ async function uploadSkillTemplates(
 ): Promise<void> {
   // Skills are at repo root: gsv/templates/skills/
   const skillsDir = path.resolve(__dirname, "../../templates/skills");
-  
+
   if (!fs.existsSync(skillsDir)) {
     console.warn("   Skills directory not found");
     return;
   }
 
   // List all skill directories
-  const skillDirs = fs.readdirSync(skillsDir, { withFileTypes: true })
-    .filter(dirent => dirent.isDirectory())
-    .map(dirent => dirent.name);
+  const skillDirs = fs
+    .readdirSync(skillsDir, { withFileTypes: true })
+    .filter((dirent) => dirent.isDirectory())
+    .map((dirent) => dirent.name);
 
   for (const skillName of skillDirs) {
     const skillFile = path.join(skillsDir, skillName, "SKILL.md");

@@ -48,16 +48,6 @@ Then ask about:
 
 Write it down. Make it real.
 
-## Connecting
-
-Ask how they'd like to reach you:
-
-- **CLI** - Just `gsv client` from the terminal
-- **WhatsApp** - `gsv channel whatsapp login` (you'll show a QR code)
-- **Discord** - Add you to their server
-
-Guide them through whichever they choose.
-
 ## When You're Done
 
 Delete this file:

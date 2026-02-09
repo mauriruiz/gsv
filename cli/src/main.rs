@@ -2073,6 +2073,9 @@ async fn run_node(
         .await;
 
         println!("Connected as node! Waiting for tool invocations...");
+        let keepalive_interval = tokio::time::Duration::from_secs(60 * 5);
+        let keepalive_timeout = tokio::time::Duration::from_secs(10);
+        let mut next_keepalive_at = tokio::time::Instant::now() + keepalive_interval;
 
         // Monitor for disconnection or Ctrl+C
         loop {
@@ -2086,6 +2089,39 @@ async fn run_node(
                         eprintln!("Connection lost! Reconnecting in 3s...");
                         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                         break; // Break inner loop to reconnect
+                    }
+
+                    if tokio::time::Instant::now() >= next_keepalive_at {
+                        let keepalive = tokio::time::timeout(
+                            keepalive_timeout,
+                            conn.request("tools.list", None),
+                        )
+                        .await;
+
+                        match keepalive {
+                            Ok(Ok(res)) if res.ok => {
+                                next_keepalive_at = tokio::time::Instant::now() + keepalive_interval;
+                            }
+                            Ok(Ok(res)) => {
+                                let message = res
+                                    .error
+                                    .map(|e| e.message)
+                                    .unwrap_or_else(|| "unknown response".to_string());
+                                eprintln!("Keepalive failed ({}). Reconnecting in 3s...", message);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                break;
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("Keepalive request error ({}). Reconnecting in 3s...", e);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                break;
+                            }
+                            Err(_) => {
+                                eprintln!("Keepalive timed out. Reconnecting in 3s...");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }

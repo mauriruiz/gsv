@@ -65,6 +65,7 @@
 
 /* Message Content - Markdown */
 .message-content {
+  white-space: break-spaces;
   font-size: var(--font-size-sm);
 }
 

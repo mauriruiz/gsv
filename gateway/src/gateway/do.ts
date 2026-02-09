@@ -192,15 +192,12 @@ export class Gateway extends DurableObject<Env> {
       `[Gateway] After rehydration: ${this.clients.size} clients, ${this.nodes.size} nodes, ${this.channels.size} channels`,
     );
 
-    const staleNodeIds = Object.keys(this.toolRegistry).filter(
+    const detachedNodeIds = Object.keys(this.toolRegistry).filter(
       (nodeId) => !this.nodes.has(nodeId),
     );
-    for (const nodeId of staleNodeIds) {
-      delete this.toolRegistry[nodeId];
-    }
-    if (staleNodeIds.length > 0) {
+    if (detachedNodeIds.length > 0) {
       console.log(
-        `[Gateway] Cleaned ${staleNodeIds.length} stale registry entries`,
+        `[Gateway] Preserving ${detachedNodeIds.length} detached registry entries until explicit disconnect`,
       );
     }
   }
@@ -407,7 +404,12 @@ export class Gateway extends DurableObject<Env> {
     console.log(
       `[Gateway] WebSocket closed: mode=${mode}, clientId=${clientId}, nodeId=${nodeId}, channelKey=${channelKey}`,
     );
-    if (mode === "client") {
+    if (mode === "client" && clientId) {
+      // Ignore close events from stale sockets that were replaced by reconnect.
+      if (this.clients.get(clientId) !== ws) {
+        console.log(`[Gateway] Ignoring stale client close: ${clientId}`);
+        return;
+      }
       this.clients.delete(clientId);
       // Cleanup persisted client-routed tool calls for this disconnected client.
       for (const [callId, route] of Object.entries(this.pendingToolCalls)) {
@@ -419,11 +421,21 @@ export class Gateway extends DurableObject<Env> {
           delete this.pendingToolCalls[callId];
         }
       }
-    } else if (mode === "node") {
+    } else if (mode === "node" && nodeId) {
+      // Ignore close events from stale sockets that were replaced by reconnect.
+      if (this.nodes.get(nodeId) !== ws) {
+        console.log(`[Gateway] Ignoring stale node close: ${nodeId}`);
+        return;
+      }
       this.nodes.delete(nodeId);
       delete this.toolRegistry[nodeId];
       console.log(`[Gateway] Node ${nodeId} removed from registry`);
     } else if (mode === "channel" && channelKey) {
+      // Ignore close events from stale sockets that were replaced by reconnect.
+      if (this.channels.get(channelKey) !== ws) {
+        console.log(`[Gateway] Ignoring stale channel close: ${channelKey}`);
+        return;
+      }
       this.channels.delete(channelKey);
       console.log(`[Gateway] Channel ${channelKey} disconnected`);
     }
