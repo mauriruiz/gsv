@@ -1,14 +1,14 @@
 /**
  * Audio transcription using OpenAI Whisper API or Cloudflare Workers AI
- * 
+ *
  * Called by Gateway to transcribe audio attachments before sending to Session.
  * Supports multiple providers:
  * - OpenAI: Uses configured API key
  * - Workers AI: Free, uses Cloudflare AI binding
  */
 
-import type { MediaAttachment } from "./types";
-import type { TranscriptionProvider } from "./config";
+import type { MediaAttachment } from "../protocol/channel";
+import type { TranscriptionProvider } from "../config";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 const OPENAI_DEFAULT_MODEL = "whisper-1";
@@ -45,7 +45,9 @@ async function transcribeWithOpenAI(
   }
 
   // Convert base64 to blob
-  const binaryData = Uint8Array.from(atob(attachment.data), c => c.charCodeAt(0));
+  const binaryData = Uint8Array.from(atob(attachment.data), (c) =>
+    c.charCodeAt(0),
+  );
   const blob = new Blob([binaryData], { type: attachment.mimeType });
 
   // Determine file extension from mime type
@@ -62,17 +64,19 @@ async function transcribeWithOpenAI(
   const response = await fetch(OPENAI_API_URL, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: formData,
   });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(`OpenAI transcription failed (HTTP ${response.status}): ${errorText}`);
+    throw new Error(
+      `OpenAI transcription failed (HTTP ${response.status}): ${errorText}`,
+    );
   }
 
-  const result = await response.json() as { text?: string };
+  const result = (await response.json()) as { text?: string };
   if (!result.text) {
     throw new Error("OpenAI transcription response missing text");
   }
@@ -97,9 +101,9 @@ async function transcribeWithWorkersAI(
   }
 
   // Workers AI Whisper expects base64 string directly
-  const result = await (ai as any).run("@cf/openai/whisper-large-v3-turbo", {
+  const result = (await (ai as any).run("@cf/openai/whisper-large-v3-turbo", {
     audio: attachment.data,
-  }) as { text?: string; vtt?: string };
+  })) as { text?: string; vtt?: string };
 
   if (!result.text) {
     throw new Error("Workers AI transcription response missing text");
@@ -113,36 +117,30 @@ async function transcribeWithWorkersAI(
   };
 }
 
-/**
- * Transcribe audio using available provider
- * Priority: Workers AI (free) > OpenAI (if configured)
- */
 export async function transcribeAudio(
   attachment: MediaAttachment,
   config: TranscriptionConfig,
 ): Promise<TranscriptionResult> {
   // Check size limit
   if (attachment.size && attachment.size > MAX_AUDIO_SIZE_BYTES) {
-    throw new Error(`Audio file too large (${(attachment.size / 1024 / 1024).toFixed(1)}MB > 25MB limit)`);
+    throw new Error(
+      `Audio file too large (${(attachment.size / 1024 / 1024).toFixed(1)}MB > 25MB limit)`,
+    );
   }
 
-  // Try Workers AI first (free)
   if (config.provider === "workers-ai" && config.workersAi) {
     return transcribeWithWorkersAI(attachment, config.workersAi);
   }
 
-  // Fall back to OpenAI
   if (config.provider === "openai" && config.openaiApiKey) {
     return transcribeWithOpenAI(attachment, config.openaiApiKey);
   }
 
-  throw new Error(`No transcription provider available (provider=${config.provider})`);
+  throw new Error(
+    `No transcription provider available (provider=${config.provider})`,
+  );
 }
 
-/**
- * Process media attachments and transcribe any audio
- * Returns the attachments with transcription populated
- */
 export async function processMediaWithTranscription(
   media: MediaAttachment[] | undefined,
   config: {
@@ -155,8 +153,6 @@ export async function processMediaWithTranscription(
     return [];
   }
 
-  // Determine which provider to use
-  // Priority: Workers AI (free) > OpenAI
   let transcriptionConfig: TranscriptionConfig | null = null;
 
   if (config.workersAi) {
@@ -171,7 +167,6 @@ export async function processMediaWithTranscription(
     };
   }
 
-  // Allow override via preferredProvider
   if (config.preferredProvider === "openai" && config.openaiApiKey) {
     transcriptionConfig = {
       provider: "openai",
@@ -183,22 +178,32 @@ export async function processMediaWithTranscription(
 
   for (const attachment of media) {
     // Only transcribe audio that has data but no transcription yet
-    if (attachment.type === "audio" && attachment.data && !attachment.transcription) {
+    if (
+      attachment.type === "audio" &&
+      attachment.data &&
+      !attachment.transcription
+    ) {
       if (!transcriptionConfig) {
-        console.log("[Gateway] Skipping audio transcription: no provider configured");
+        console.log(
+          "[Gateway] Skipping audio transcription: no provider configured",
+        );
         processed.push(attachment);
         continue;
       }
 
       try {
-        const sizeInfo = attachment.size 
-          ? `${(attachment.size / 1024).toFixed(1)}KB` 
+        const sizeInfo = attachment.size
+          ? `${(attachment.size / 1024).toFixed(1)}KB`
           : `${attachment.data.length} chars b64`;
-        console.log(`[Gateway] Transcribing audio (${transcriptionConfig.provider}): ${attachment.mimeType}, ${sizeInfo}`);
-        
+        console.log(
+          `[Gateway] Transcribing audio (${transcriptionConfig.provider}): ${attachment.mimeType}, ${sizeInfo}`,
+        );
+
         const result = await transcribeAudio(attachment, transcriptionConfig);
-        console.log(`[Gateway] Transcription (${result.provider}): "${result.text.substring(0, 50)}..."`);
-        
+        console.log(
+          `[Gateway] Transcription (${result.provider}): "${result.text.substring(0, 50)}..."`,
+        );
+
         processed.push({
           ...attachment,
           transcription: result.text,
