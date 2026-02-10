@@ -56,6 +56,10 @@ import {
 import { processMediaWithTranscription } from "../transcription";
 import { processInboundMedia } from "../storage/media";
 import { getWorkspaceToolDefinitions } from "../workspace/tools";
+import {
+  listHostsByRole,
+  pickExecutionHostId,
+} from "./capabilities";
 import type { ChatEventPayload } from "../protocol/chat";
 import type {
   ChannelRegistryEntry,
@@ -67,6 +71,8 @@ import type {
 } from "../protocol/channel";
 import type { SessionRegistryEntry } from "../protocol/session";
 import type {
+  RuntimeNodeInventory,
+  NodeRuntimeInfo,
   ToolDefinition,
   ToolInvokePayload,
   ToolRequestParams,
@@ -102,6 +108,10 @@ export class Gateway extends DurableObject<Env> {
   readonly toolRegistry = PersistedObject<Record<string, ToolDefinition[]>>(
     this.ctx.storage.kv,
     { prefix: "toolRegistry:" },
+  );
+  readonly nodeRuntimeRegistry = PersistedObject<Record<string, NodeRuntimeInfo>>(
+    this.ctx.storage.kv,
+    { prefix: "nodeRuntimeRegistry:" },
   );
 
   readonly pendingToolCalls = PersistedObject<Record<string, PendingToolRoute>>(
@@ -198,6 +208,14 @@ export class Gateway extends DurableObject<Env> {
     if (detachedNodeIds.length > 0) {
       console.log(
         `[Gateway] Preserving ${detachedNodeIds.length} detached registry entries until explicit disconnect`,
+      );
+    }
+    const detachedRuntimeNodeIds = Object.keys(this.nodeRuntimeRegistry).filter(
+      (nodeId) => !this.nodes.has(nodeId),
+    );
+    if (detachedRuntimeNodeIds.length > 0) {
+      console.log(
+        `[Gateway] Preserving ${detachedRuntimeNodeIds.length} detached runtime entries until explicit disconnect`,
       );
     }
   }
@@ -429,6 +447,7 @@ export class Gateway extends DurableObject<Env> {
       }
       this.nodes.delete(nodeId);
       delete this.toolRegistry[nodeId];
+      delete this.nodeRuntimeRegistry[nodeId];
       console.log(`[Gateway] Node ${nodeId} removed from registry`);
     } else if (mode === "channel" && channelKey) {
       // Ignore close events from stale sockets that were replaced by reconnect.
@@ -504,17 +523,26 @@ export class Gateway extends DurableObject<Env> {
   ): { nodeId: string; toolName: string } | null {
     const separatorIndex = namespacedTool.indexOf("__");
     if (separatorIndex === -1) {
-      // Legacy: no namespace, search all nodes
-      for (const nodeId of this.nodes.keys()) {
-        if (
-          this.toolRegistry[nodeId]?.some(
-            (t: ToolDefinition) => t.name === namespacedTool,
-          )
-        ) {
-          return { nodeId, toolName: namespacedTool };
-        }
+      const nodeIds = Array.from(this.nodes.keys()).filter((nodeId) =>
+        this.toolRegistry[nodeId]?.some(
+          (t: ToolDefinition) => t.name === namespacedTool,
+        ),
+      );
+
+      if (nodeIds.length === 0) {
+        return null;
       }
-      return null;
+
+      const executionHost = pickExecutionHostId({
+        nodeIds,
+        runtimes: this.nodeRuntimeRegistry,
+      });
+      if (executionHost) {
+        return { nodeId: executionHost, toolName: namespacedTool };
+      }
+
+      const fallback = [...nodeIds].sort()[0];
+      return { nodeId: fallback, toolName: namespacedTool };
     }
 
     const nodeId = namespacedTool.slice(0, separatorIndex);
@@ -533,6 +561,60 @@ export class Gateway extends DurableObject<Env> {
     }
 
     return { nodeId, toolName };
+  }
+
+  getExecutionHostId(): string | null {
+    return pickExecutionHostId({
+      nodeIds: Array.from(this.nodes.keys()),
+      runtimes: this.nodeRuntimeRegistry,
+    });
+  }
+
+  getSpecializedHostIds(): string[] {
+    return listHostsByRole({
+      nodeIds: Array.from(this.nodes.keys()),
+      runtimes: this.nodeRuntimeRegistry,
+      role: "specialized",
+    });
+  }
+
+  getRuntimeNodeInventory(): RuntimeNodeInventory {
+    const nodeIds = Array.from(this.nodes.keys()).sort();
+    const hosts = nodeIds.map((nodeId) => {
+      const runtime = this.nodeRuntimeRegistry[nodeId];
+      const tools = (this.toolRegistry[nodeId] ?? []).map((tool) => tool.name).sort();
+
+      if (!runtime) {
+        return {
+          nodeId,
+          hostRole: "specialized" as const,
+          hostCapabilities: [],
+          toolCapabilities: {},
+          tools,
+        };
+      }
+
+      return {
+        nodeId,
+        hostRole: runtime.hostRole,
+        hostCapabilities: [...runtime.hostCapabilities].sort(),
+        toolCapabilities: Object.fromEntries(
+          Object.entries(runtime.toolCapabilities)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([toolName, capabilities]) => [
+              toolName,
+              [...capabilities].sort(),
+            ]),
+        ),
+        tools,
+      };
+    });
+
+    return {
+      executionHostId: this.getExecutionHostId(),
+      specializedHostIds: this.getSpecializedHostIds(),
+      hosts,
+    };
   }
 
   getAllTools(): ToolDefinition[] {

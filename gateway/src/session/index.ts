@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { PersistedObject } from "../shared/persisted-object";
 import type { ChatEventPayload } from "../protocol/chat";
-import type { ToolDefinition } from "../protocol/tools";
+import type { RuntimeNodeInventory, ToolDefinition } from "../protocol/tools";
 import type { MediaAttachment } from "../protocol/channel";
 import type { GsvConfig } from "../config";
 import type {
@@ -227,6 +227,19 @@ export class Session extends DurableObject<Env> {
     }
 
     return "main";
+  }
+
+  private async loadRuntimeNodeInventory(): Promise<RuntimeNodeInventory | undefined> {
+    try {
+      const gateway = this.env.GATEWAY.getByName("singleton");
+      const inventory = await gateway.getRuntimeNodeInventory();
+      return inventory as RuntimeNodeInventory;
+    } catch (error) {
+      console.warn(
+        `[Session] Failed to load runtime node inventory for prompt: ${error}`,
+      );
+      return undefined;
+    }
   }
 
   // Metadata (small, uses PersistedObject)
@@ -979,6 +992,8 @@ export class Session extends DurableObject<Env> {
     const effectiveSystemPrompt = await this.buildEffectiveSystemPrompt(
       config,
       sessionSettings,
+      effectiveModel,
+      this.currentRun?.tools ?? [],
     );
 
     if (messageOverrides.model) {
@@ -1112,6 +1127,8 @@ export class Session extends DurableObject<Env> {
   private async buildEffectiveSystemPrompt(
     config: GsvConfig,
     sessionSettings: SessionSettings,
+    effectiveModel: { provider: string; id: string },
+    runTools: ToolDefinition[],
   ): Promise<string> {
     const agentId = this.getAgentId();
 
@@ -1137,6 +1154,7 @@ export class Session extends DurableObject<Env> {
       workspace.user?.exists && "USER.md",
       workspace.memory?.exists && "MEMORY.md",
       workspace.tools?.exists && "TOOLS.md",
+      workspace.heartbeat?.exists && "HEARTBEAT.md",
       workspace.bootstrap?.exists && "BOOTSTRAP.md",
       workspace.dailyMemory?.exists && "daily",
       workspace.yesterdayMemory?.exists && "yesterday",
@@ -1148,9 +1166,23 @@ export class Session extends DurableObject<Env> {
 
     // Get base prompt from settings or config
     const basePrompt = sessionSettings.systemPrompt || config.systemPrompt;
+    const agentConfig = config.agents.list.find((agent) => agent.id === agentId);
+    const heartbeatPrompt =
+      agentConfig?.heartbeat?.prompt || config.agents.defaultHeartbeat.prompt;
+    const runtimeNodes = await this.loadRuntimeNodeInventory();
 
     // Build combined prompt
-    return buildSystemPromptFromWorkspace(basePrompt, workspace);
+    return buildSystemPromptFromWorkspace(basePrompt, workspace, {
+      tools: runTools,
+      heartbeatPrompt,
+      runtime: {
+        agentId,
+        sessionKey: this.meta.sessionKey,
+        isMainSession: mainSession,
+        model: effectiveModel,
+        nodes: runtimeNodes,
+      },
+    });
   }
 
   private async broadcastToClients(payload: ChatEventPayload): Promise<void> {
