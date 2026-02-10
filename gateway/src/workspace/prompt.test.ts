@@ -76,6 +76,80 @@ describe("buildSystemPromptFromWorkspace", () => {
     expect(prompt).toContain("<read_path>skills/global/SKILL.md</read_path>");
   });
 
+  it("filters skills by runtime capability requirements", () => {
+    const tools: ToolDefinition[] = [
+      {
+        name: "gsv__ReadFile",
+        description: "Read files from workspace",
+        inputSchema: { type: "object" },
+      },
+    ];
+
+    const workspace: AgentWorkspace = {
+      agentId: "main",
+      skills: [
+        {
+          name: "exec-skill",
+          description: "Needs execution shell",
+          location: "skills/exec-skill/SKILL.md",
+          metadata: {
+            gsv: {
+              requires: {
+                hostRoles: ["execution"],
+                capabilities: ["shell.exec"],
+              },
+            },
+          },
+        },
+        {
+          name: "ios-skill",
+          description: "Needs specialized search",
+          location: "skills/ios-skill/SKILL.md",
+          metadata: {
+            gsv: {
+              requires: {
+                hostRoles: ["specialized"],
+                capabilities: ["text.search"],
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    const prompt = buildSystemPromptFromWorkspace("Base", workspace, {
+      tools,
+      runtime: {
+        agentId: "main",
+        isMainSession: true,
+        nodes: {
+          executionHostId: "exec-1",
+          specializedHostIds: [],
+          hosts: [
+            {
+              nodeId: "exec-1",
+              hostRole: "execution",
+              hostCapabilities: [
+                "filesystem.list",
+                "filesystem.read",
+                "filesystem.write",
+                "shell.exec",
+              ],
+              toolCapabilities: {},
+              tools: ["Bash"],
+            },
+          ],
+        },
+      },
+    });
+
+    expect(prompt).toContain('<skill name="exec-skill">');
+    expect(prompt).not.toContain('<skill name="ios-skill">');
+    expect(prompt).toContain(
+      "Runtime filter: 1 skill(s) hidden due unmet runtime capability requirements.",
+    );
+  });
+
   it("includes heartbeat guidance from config and HEARTBEAT.md", () => {
     const nodes: RuntimeNodeInventory = {
       executionHostId: "exec-node-1",

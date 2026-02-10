@@ -1509,9 +1509,12 @@ export class Gateway extends DurableObject<Env> {
     }
     const prompt = config.prompt;
     const tools = JSON.parse(JSON.stringify(this.getAllTools()));
+    const runtimeNodes = JSON.parse(
+      JSON.stringify(this.getRuntimeNodeInventory()),
+    );
 
     try {
-      await session.chatSend(prompt, runId, tools, sessionKey);
+      await session.chatSend(prompt, runId, tools, runtimeNodes, sessionKey);
       console.log(`[Gateway] Heartbeat sent to session ${sessionKey}`);
     } catch (e) {
       console.error(`[Gateway] Heartbeat failed for ${agentId}:`, e);
@@ -1865,6 +1868,7 @@ export class Gateway extends DurableObject<Env> {
         directives.cleaned,
         runId,
         JSON.parse(JSON.stringify(this.getAllTools())),
+        JSON.parse(JSON.stringify(this.getRuntimeNodeInventory())),
         sessionKey,
         messageOverrides,
         processedMedia.length > 0 ? processedMedia : undefined,

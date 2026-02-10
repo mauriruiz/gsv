@@ -4,6 +4,7 @@ import type { ChatEventPayload } from "../protocol/chat";
 import type { RuntimeNodeInventory, ToolDefinition } from "../protocol/tools";
 import type { MediaAttachment } from "../protocol/channel";
 import type { GsvConfig } from "../config";
+import type { SkillSummary } from "../skills";
 import type {
   Message,
   UserMessage,
@@ -75,6 +76,7 @@ export type QueuedMessage = {
   runId: string;
   // Optional for backward compatibility with already-persisted queue entries.
   tools?: ToolDefinition[];
+  runtimeNodes?: RuntimeNodeInventory;
   media?: MediaAttachment[];
   messageOverrides?: {
     thinkLevel?: string;
@@ -87,6 +89,8 @@ export type QueuedMessage = {
 export type CurrentRun = {
   runId: string;
   tools: ToolDefinition[];
+  runtimeNodes?: RuntimeNodeInventory;
+  skillsSnapshot?: SkillSummary[];
   messageOverrides?: {
     thinkLevel?: string;
     model?: { provider: string; id: string };
@@ -500,6 +504,7 @@ export class Session extends DurableObject<Env> {
     message: string,
     runId: string,
     tools: ToolDefinition[],
+    runtimeNodes: RuntimeNodeInventory | undefined,
     sessionKey: string,
     messageOverrides?: {
       thinkLevel?: string;
@@ -519,6 +524,9 @@ export class Session extends DurableObject<Env> {
         text: message,
         runId,
         tools: JSON.parse(JSON.stringify(tools)),
+        runtimeNodes: runtimeNodes
+          ? JSON.parse(JSON.stringify(runtimeNodes))
+          : undefined,
         media,
         messageOverrides,
         queuedAt: Date.now(),
@@ -538,7 +546,7 @@ export class Session extends DurableObject<Env> {
     }
 
     // Start processing this message (async - don't await!)
-    this.startRun(message, runId, tools, messageOverrides, media);
+    this.startRun(message, runId, tools, runtimeNodes, messageOverrides, media);
 
     return { ok: true, runId, started: true };
   }
@@ -551,6 +559,7 @@ export class Session extends DurableObject<Env> {
     message: string,
     runId: string,
     tools: ToolDefinition[],
+    runtimeNodes: RuntimeNodeInventory | undefined,
     messageOverrides?: {
       thinkLevel?: string;
       model?: { provider: string; id: string };
@@ -561,6 +570,9 @@ export class Session extends DurableObject<Env> {
     this.currentRun = {
       runId,
       tools,
+      runtimeNodes: runtimeNodes
+        ? JSON.parse(JSON.stringify(runtimeNodes))
+        : undefined,
       messageOverrides,
       startedAt: Date.now(),
     };
@@ -794,6 +806,7 @@ export class Session extends DurableObject<Env> {
       next.text,
       next.runId,
       next.tools ?? [],
+      next.runtimeNodes,
       next.messageOverrides,
       next.media,
     );
@@ -994,6 +1007,7 @@ export class Session extends DurableObject<Env> {
       sessionSettings,
       effectiveModel,
       this.currentRun?.tools ?? [],
+      this.currentRun?.runtimeNodes,
     );
 
     if (messageOverrides.model) {
@@ -1129,6 +1143,7 @@ export class Session extends DurableObject<Env> {
     sessionSettings: SessionSettings,
     effectiveModel: { provider: string; id: string },
     runTools: ToolDefinition[],
+    runRuntimeNodes: RuntimeNodeInventory | undefined,
   ): Promise<string> {
     const agentId = this.getAgentId();
 
@@ -1145,6 +1160,19 @@ export class Session extends DurableObject<Env> {
       agentId,
       mainSession,
     );
+
+    if (this.currentRun?.skillsSnapshot) {
+      workspace.skills = JSON.parse(
+        JSON.stringify(this.currentRun.skillsSnapshot),
+      ) as SkillSummary[];
+    } else if (workspace.skills && this.currentRun) {
+      this.currentRun = {
+        ...this.currentRun,
+        skillsSnapshot: JSON.parse(
+          JSON.stringify(workspace.skills),
+        ) as SkillSummary[],
+      };
+    }
 
     // Log what was loaded
     const loaded = [
@@ -1169,7 +1197,8 @@ export class Session extends DurableObject<Env> {
     const agentConfig = config.agents.list.find((agent) => agent.id === agentId);
     const heartbeatPrompt =
       agentConfig?.heartbeat?.prompt || config.agents.defaultHeartbeat.prompt;
-    const runtimeNodes = await this.loadRuntimeNodeInventory();
+    const runtimeNodes =
+      runRuntimeNodes ?? (await this.loadRuntimeNodeInventory());
 
     // Build combined prompt
     return buildSystemPromptFromWorkspace(basePrompt, workspace, {
