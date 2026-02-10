@@ -841,7 +841,7 @@ fn node_logs_file(lines: usize, follow: bool) -> Result<(), Box<dyn std::error::
     let mut cmd = std::process::Command::new("tail");
     cmd.arg("-n").arg(lines.to_string());
     if follow {
-        cmd.arg("-f");
+        cmd.arg("-F");
     }
     cmd.arg(&log_path);
 
