@@ -57,6 +57,22 @@ export const handleConnect: Handler<"connect"> = (ctx) => {
 
     const existingWs = gw.nodes.get(nodeId);
     if (existingWs && existingWs !== ws) {
+      // Any in-flight logs.get requests targeted at the old socket cannot
+      // complete after replacement; fail them before swapping the node entry.
+      for (const [callId, route] of Object.entries(gw.pendingLogCalls)) {
+        if (typeof route === "object" && route.nodeId === nodeId) {
+          const clientWs = gw.clients.get(route.clientId);
+          if (clientWs && clientWs.readyState === WebSocket.OPEN) {
+            gw.sendError(
+              clientWs,
+              route.frameId,
+              503,
+              `Node replaced during log request: ${nodeId}`,
+            );
+          }
+          delete gw.pendingLogCalls[callId];
+        }
+      }
       existingWs.close(1000, "Replaced by newer node connection");
     }
 
@@ -101,9 +117,11 @@ export const handleConnect: Handler<"connect"> = (ctx) => {
     features: {
       methods: [
         "tools.list",
+        "logs.get",
         "chat.send",
         "tool.request",
         "tool.result",
+        "logs.result",
         "channel.inbound",
         "channel.start",
         "channel.stop",
@@ -112,7 +130,13 @@ export const handleConnect: Handler<"connect"> = (ctx) => {
         "channel.logout",
         "channels.list",
       ],
-      events: ["chat", "tool.invoke", "tool.result", "channel.outbound"],
+      events: [
+        "chat",
+        "tool.invoke",
+        "tool.result",
+        "logs.get",
+        "channel.outbound",
+      ],
     },
   };
 

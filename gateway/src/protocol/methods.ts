@@ -17,6 +17,11 @@ import {
 import type { RequestFrame } from "./frames";
 import type { SessionRegistryEntry } from "./session";
 import type {
+  LogsGetParams,
+  LogsGetResult,
+  LogsResultParams,
+} from "./logs";
+import type {
   ToolDefinition,
   NodeRuntimeInfo,
   ToolRequestParams,
@@ -75,6 +80,16 @@ export type RpcMethods = {
 
   "tool.result": {
     params: ToolResultParams;
+    result: { ok: true; dropped?: true };
+  };
+
+  "logs.get": {
+    params: LogsGetParams | undefined;
+    result: LogsGetResult;
+  };
+
+  "logs.result": {
+    params: LogsResultParams;
     result: { ok: true; dropped?: true };
   };
 
@@ -286,7 +301,7 @@ export type RpcMethods = {
 };
 
 export type RpcMethod = keyof RpcMethods;
-export type DeferrableMethod = "tool.invoke";
+export type DeferrableMethod = "tool.invoke" | "logs.get";
 export type ParamsOf<M extends RpcMethod> = RpcMethods[M]["params"];
 export type ResultOf<M extends RpcMethod> = RpcMethods[M]["result"];
 export type HandlerResult<M extends RpcMethod> =
