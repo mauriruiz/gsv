@@ -73,6 +73,8 @@ export type QueuedMessage = {
   id: string;
   text: string;
   runId: string;
+  // Optional for backward compatibility with already-persisted queue entries.
+  tools?: ToolDefinition[];
   media?: MediaAttachment[];
   messageOverrides?: {
     thinkLevel?: string;
@@ -503,6 +505,7 @@ export class Session extends DurableObject<Env> {
         id: crypto.randomUUID(),
         text: message,
         runId,
+        tools: JSON.parse(JSON.stringify(tools)),
         media,
         messageOverrides,
         queuedAt: Date.now(),
@@ -551,28 +554,46 @@ export class Session extends DurableObject<Env> {
 
     console.log(`[Session] Starting run ${runId}`);
 
-    // Build and store user message synchronously
+    // Build user message and evaluate freshness before touching updatedAt
     const userMessage = this.buildUserMessage(message, media);
-    this.addMessage(userMessage);
-    this.meta.updatedAt = Date.now();
+    const shouldResetBeforeRun = this.shouldAutoReset(this.meta.updatedAt);
+
+    // Persist message immediately for normal runs.
+    // If a reset is due, runAgentLoop will reset first, then add this message.
+    if (!shouldResetBeforeRun) {
+      this.addMessage(userMessage);
+      this.meta.updatedAt = Date.now();
+    }
 
     // Kick off the agent loop asynchronously
     // ctx.waitUntil() keeps the DO alive but doesn't block the RPC response
-    this.ctx.waitUntil(this.runAgentLoop());
+    this.ctx.waitUntil(
+      this.runAgentLoop({ shouldResetBeforeRun, userMessage }),
+    );
   }
 
   /**
    * The main agent loop. Runs asynchronously after chatSend returns.
    * Calls LLM, handles tool calls, broadcasts results.
    */
-  private async runAgentLoop(): Promise<void> {
+  private async runAgentLoop(params?: {
+    shouldResetBeforeRun?: boolean;
+    userMessage?: UserMessage;
+  }): Promise<void> {
     try {
       // Check for auto-reset
-      if (this.shouldAutoReset()) {
+      const shouldReset = params?.shouldResetBeforeRun ?? this.shouldAutoReset();
+      if (shouldReset) {
         console.log(
           `[Session] Auto-reset triggered for ${this.meta.sessionKey}`,
         );
         await this.doReset();
+
+        // If this run triggered reset, record the triggering message in the fresh session.
+        if (params?.userMessage) {
+          this.addMessage(params.userMessage);
+          this.meta.updatedAt = Date.now();
+        }
       }
 
       await this.continueAgentLoop();
@@ -759,7 +780,7 @@ export class Session extends DurableObject<Env> {
     this.startRun(
       next.text,
       next.runId,
-      (this.currentRun?.tools ?? next.messageOverrides) ? [] : [], // Reuse tools if available
+      next.tools ?? [],
       next.messageOverrides,
       next.media,
     );
@@ -875,7 +896,7 @@ export class Session extends DurableObject<Env> {
     };
   }
 
-  private shouldAutoReset(): boolean {
+  private shouldAutoReset(lastActivityAt: number = this.meta.updatedAt): boolean {
     const policy = this.meta.resetPolicy;
     if (!policy || policy.mode === "manual") return false;
 
@@ -884,12 +905,12 @@ export class Session extends DurableObject<Env> {
     if (policy.mode === "daily") {
       const atHour = policy.atHour ?? 4;
       const resetTime = this.getDailyResetTime(now, atHour);
-      return this.meta.updatedAt < resetTime;
+      return lastActivityAt < resetTime;
     }
 
     if (policy.mode === "idle") {
       const idleMs = (policy.idleMinutes ?? 60) * 60_000;
-      return now - this.meta.updatedAt > idleMs;
+      return now - lastActivityAt > idleMs;
     }
 
     return false;
@@ -1264,6 +1285,9 @@ export class Session extends DurableObject<Env> {
 
     // Clear current run
     this.currentRun = null;
+    // Clear queued messages and pending tool timeout alarm
+    this.messageQueue = [];
+    this.ctx.storage.deleteAlarm();
 
     // Update metadata
     const newSessionId = Session.generateSessionId();
