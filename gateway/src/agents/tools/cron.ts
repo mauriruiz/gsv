@@ -52,10 +52,75 @@ export const getCronToolDefinitions = (): ToolDefinition[] => [
         job: {
           type: "object",
           description: "Job create payload for action=add.",
+          properties: {
+            name: {
+              type: "string",
+              description: "Human-readable job name (required).",
+            },
+            schedule: {
+              type: "object",
+              description:
+                'Schedule object (required). Must have a "kind" discriminator: ' +
+                '{ kind: "at", atMs: <epoch_ms> } for one-shot, ' +
+                '{ kind: "every", everyMs: <ms>, anchorMs?: <epoch_ms> } for interval, ' +
+                '{ kind: "cron", expr: "<5-field cron>", tz?: "<IANA timezone>" } for cron expression.',
+              properties: {
+                kind: {
+                  type: "string",
+                  enum: ["at", "every", "cron"],
+                  description: "Schedule type.",
+                },
+              },
+              required: ["kind"],
+            },
+            payload: {
+              type: "object",
+              description:
+                'Payload object (required). Must have a "kind" discriminator: ' +
+                '{ kind: "systemEvent", text: "<message>" } or ' +
+                '{ kind: "agentTurn", message: "<message>", model?: string, ... }.',
+              properties: {
+                kind: {
+                  type: "string",
+                  enum: ["systemEvent", "agentTurn"],
+                  description: "Payload type.",
+                },
+              },
+              required: ["kind"],
+            },
+            agentId: {
+              type: "string",
+              description: 'Agent that owns the job. Defaults to "main".',
+            },
+            description: {
+              type: "string",
+              description: "Optional human-readable description.",
+            },
+            enabled: {
+              type: "boolean",
+              description: "Whether the job is active. Defaults to true.",
+            },
+            deleteAfterRun: {
+              type: "boolean",
+              description: "If true, delete the job after a successful one-shot run.",
+            },
+            sessionTarget: {
+              type: "string",
+              enum: ["main", "isolated"],
+              description: 'Session target. Defaults to "main".',
+            },
+            wakeMode: {
+              type: "string",
+              enum: ["now", "next-heartbeat"],
+              description: 'Wake mode. Defaults to "now".',
+            },
+          },
+          required: ["name", "schedule", "payload"],
         },
         patch: {
           type: "object",
-          description: "Job patch payload for action=update.",
+          description:
+            "Job patch payload for action=update. Same fields as job but all optional.",
         },
         jobId: {
           type: "string",

@@ -1,10 +1,5 @@
 import type { CronJob, CronRun } from "./types";
 
-type SqlCursor<T> = {
-  toArray(): T[];
-  one(): T | null;
-};
-
 type JobRow = {
   id: string;
   agent_id: string;
@@ -117,7 +112,7 @@ export class CronStore {
         `SELECT COUNT(*) as count FROM cron_jobs ${whereClause}`,
         ...params,
       )
-      .one();
+      .toArray()[0];
 
     const rows = this.sql
       .exec<JobRow>(
@@ -141,10 +136,10 @@ export class CronStore {
   }
 
   getJob(id: string): CronJob | undefined {
-    const row = this.sql
+    const rows = this.sql
       .exec<JobRow>(`SELECT * FROM cron_jobs WHERE id = ? LIMIT 1`, id)
-      .one();
-    return row ? this.rowToJob(row) : undefined;
+      .toArray();
+    return rows.length > 0 ? this.rowToJob(rows[0]) : undefined;
   }
 
   createJob(job: CronJob): void {
@@ -242,13 +237,13 @@ export class CronStore {
           `SELECT COUNT(*) as count FROM cron_jobs WHERE agent_id = ?`,
           agentId,
         )
-        .one();
+        .toArray()[0];
       return row?.count ?? 0;
     }
 
     const row = this.sql
       .exec<{ count: number }>(`SELECT COUNT(*) as count FROM cron_jobs`)
-      .one();
+      .toArray()[0];
     return row?.count ?? 0;
   }
 
@@ -265,7 +260,7 @@ export class CronStore {
         `,
         nowMs,
       )
-      .one();
+      .toArray()[0];
     return row?.count ?? 0;
   }
 
@@ -274,12 +269,12 @@ export class CronStore {
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM cron_jobs WHERE running_at_ms IS NOT NULL`,
       )
-      .one();
+      .toArray()[0];
     return row?.count ?? 0;
   }
 
   nextDueAtMs(): number | undefined {
-    const row = this.sql
+    const rows = this.sql
       .exec<{ next_run_at_ms: number | null }>(
         `
           SELECT next_run_at_ms
@@ -290,8 +285,8 @@ export class CronStore {
           LIMIT 1
         `,
       )
-      .one();
-    return row?.next_run_at_ms ?? undefined;
+      .toArray();
+    return rows.length > 0 ? (rows[0].next_run_at_ms ?? undefined) : undefined;
   }
 
   dueJobs(nowMs: number, limit: number): CronJob[] {
@@ -369,7 +364,7 @@ export class CronStore {
           `SELECT COUNT(*) as count FROM cron_runs WHERE job_id = ?`,
           jobId,
         )
-        .one();
+        .toArray()[0];
       const rows = this.sql
         .exec<RunRow>(
           `
@@ -393,7 +388,7 @@ export class CronStore {
 
     const countRow = this.sql
       .exec<{ count: number }>(`SELECT COUNT(*) as count FROM cron_runs`)
-      .one();
+      .toArray()[0];
     const rows = this.sql
       .exec<RunRow>(
         `

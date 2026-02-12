@@ -999,6 +999,13 @@ export class Gateway extends DurableObject<Env> {
         });
       case "add": {
         const jobInput = asObject(args.job) ?? args;
+        if (!jobInput || typeof jobInput !== "object") {
+          throw new Error("cron add requires a job object");
+        }
+        const ji = jobInput as Record<string, unknown>;
+        if (!ji.name || !ji.schedule || !ji.payload) {
+          throw new Error("cron add requires name, schedule, and payload");
+        }
         const job = await this.addCronJob(jobInput as unknown as CronJobCreate);
         return { ok: true, job };
       }

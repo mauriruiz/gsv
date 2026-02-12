@@ -18,7 +18,7 @@ export const getWorkspaceToolDefinitions = (): ToolDefinition[] => [
   {
     name: NATIVE_TOOLS.LIST_FILES,
     description:
-      "List files and directories in your workspace. Your workspace persists across sessions and contains your identity files (SOUL.md, IDENTITY.md, etc.), memory files, and any other files you create. You can also list under skills/ to browse skill files (agent overrides + global fallback).",
+      "List files and directories in your workspace. Your workspace persists across sessions and contains your identity files (SOUL.md, IDENTITY.md, etc.), memory files, and any other files you create. You can also list under skills/ to browse skill files.",
     inputSchema: {
       type: "object",
       properties: {

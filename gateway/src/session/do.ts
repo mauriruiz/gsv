@@ -395,7 +395,7 @@ export class Session extends DurableObject<Env> {
   private getMessageCount(): number {
     const result = this.ctx.storage.sql
       .exec<{ count: number }>(`SELECT COUNT(*) as count FROM messages`)
-      .one();
+      .toArray()[0];
     return result?.count ?? 0;
   }
 
