@@ -281,10 +281,21 @@ struct QueueSummary {
 #[derive(Debug, Deserialize)]
 struct QueueConsumerSummary {
     consumer_id: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     consumer_type: String,
     script: Option<String>,
     service: Option<String>,
+    #[serde(alias = "script_name")]
+    script_name: Option<String>,
+    worker: Option<QueueConsumerWorkerRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueConsumerWorkerRef {
+    script: Option<String>,
+    service: Option<String>,
+    #[serde(alias = "script_name")]
+    script_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1231,11 +1242,10 @@ async fn upsert_queue_consumer(
         }
     });
 
-    if let Some(existing) = consumers.iter().find(|consumer| {
-        consumer.consumer_type == "worker"
-            && (consumer.script.as_deref() == Some(script_name)
-                || consumer.service.as_deref() == Some(script_name))
-    }) {
+    if let Some(existing) = consumers
+        .iter()
+        .find(|consumer| queue_consumer_targets_script(consumer, script_name))
+    {
         let update_url = cloudflare_api_url(&format!(
             "/accounts/{}/queues/{}/consumers/{}",
             account_id, queue_id, existing.consumer_id
@@ -1296,6 +1306,42 @@ async fn upsert_queue_consumer(
     }
 
     Ok(())
+}
+
+fn queue_consumer_targets_script(consumer: &QueueConsumerSummary, script_name: &str) -> bool {
+    let consumer_type = consumer.consumer_type.trim();
+    let is_worker_consumer = consumer_type.is_empty()
+        || consumer_type.eq_ignore_ascii_case("worker")
+        || consumer_type.eq_ignore_ascii_case("script");
+    if !is_worker_consumer {
+        return false;
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(script) = consumer.script.as_deref() {
+        candidates.push(script);
+    }
+    if let Some(script) = consumer.service.as_deref() {
+        candidates.push(script);
+    }
+    if let Some(script) = consumer.script_name.as_deref() {
+        candidates.push(script);
+    }
+    if let Some(worker) = consumer.worker.as_ref() {
+        if let Some(script) = worker.script.as_deref() {
+            candidates.push(script);
+        }
+        if let Some(script) = worker.service.as_deref() {
+            candidates.push(script);
+        }
+        if let Some(script) = worker.script_name.as_deref() {
+            candidates.push(script);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .any(|candidate| candidate.trim() == script_name)
 }
 
 async fn find_queue_by_name(
@@ -1367,11 +1413,7 @@ async fn remove_queue_consumer_for_script(
 
     let matching_ids: Vec<String> = consumers
         .into_iter()
-        .filter(|consumer| {
-            consumer.consumer_type == "worker"
-                && (consumer.script.as_deref() == Some(script_name)
-                    || consumer.service.as_deref() == Some(script_name))
-        })
+        .filter(|consumer| queue_consumer_targets_script(consumer, script_name))
         .map(|consumer| consumer.consumer_id)
         .collect();
 
@@ -1727,6 +1769,47 @@ async fn delete_r2_object(
     .into())
 }
 
+async fn r2_object_exists(
+    client: &reqwest::Client,
+    account_id: &str,
+    api_token: &str,
+    bucket_name: &str,
+    jurisdiction: Option<&str>,
+    object_key: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let url = cloudflare_api_url(&format!(
+        "/accounts/{}/r2/buckets/{}/objects/{}",
+        account_id, bucket_name, object_key
+    ));
+    let response = send_cloudflare_request_with_retry(
+        || {
+            let mut request = client.head(&url).bearer_auth(api_token);
+            if let Some(value) = jurisdiction {
+                request = request.header("cf-r2-jurisdiction", value);
+            }
+            request.send()
+        },
+        &format!("Check R2 object {}", object_key),
+    )
+    .await?;
+
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+
+    if response.status().is_success() {
+        return Ok(true);
+    }
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(format!(
+        "Check R2 object {} failed ({}): {}",
+        object_key, status, body
+    )
+    .into())
+}
+
 async fn purge_r2_bucket_objects(
     client: &reqwest::Client,
     account_id: &str,
@@ -1821,11 +1904,9 @@ async fn queue_has_consumer_for_script(
     let consumers: Vec<QueueConsumerSummary> =
         decode_list_from_value(list_result, &["consumers", "items"])?;
 
-    Ok(consumers.into_iter().any(|consumer| {
-        consumer.consumer_type == "worker"
-            && (consumer.script.as_deref() == Some(script_name)
-                || consumer.service.as_deref() == Some(script_name))
-    }))
+    Ok(consumers
+        .into_iter()
+        .any(|consumer| queue_consumer_targets_script(&consumer, script_name)))
 }
 
 fn deploy_order(component: &str) -> usize {
@@ -2524,12 +2605,28 @@ async fn sync_templates_for_bundle(
     }
 
     println!(
-        "Uploading {} template object(s) to R2 bucket {} for {}.",
+        "Syncing {} template object(s) to R2 bucket {} for {}.",
         uploads.len(),
         bucket_name,
         bundle.script_name
     );
+    let mut uploaded_count = 0usize;
+    let mut skipped_existing_count = 0usize;
     for (key, path) in uploads {
+        if r2_object_exists(
+            client,
+            account_id,
+            api_token,
+            &bucket_name,
+            jurisdiction.as_deref(),
+            &key,
+        )
+        .await?
+        {
+            skipped_existing_count += 1;
+            continue;
+        }
+
         let body = fs::read(&path)?;
         let content_type = mime_guess::from_path(&path)
             .first_raw()
@@ -2545,8 +2642,20 @@ async fn sync_templates_for_bundle(
             content_type,
         )
         .await?;
+        uploaded_count += 1;
     }
-    println!("Uploaded templates for {}.", bundle.script_name);
+    if uploaded_count > 0 {
+        println!(
+            "Uploaded {} template object(s) for {}.",
+            uploaded_count, bundle.script_name
+        );
+    }
+    if skipped_existing_count > 0 {
+        println!(
+            "Skipped {} existing template object(s) for {}.",
+            skipped_existing_count, bundle.script_name
+        );
+    }
 
     Ok(())
 }
@@ -2979,15 +3088,22 @@ pub async fn destroy_deploy(
         gateway_queue =
             find_queue_by_name(&client, account_id, api_token, DEFAULT_GATEWAY_QUEUE_NAME).await?;
         if let Some(queue) = &gateway_queue {
-            let removed = remove_queue_consumer_for_script(
-                &client,
-                account_id,
-                api_token,
-                &queue.queue_id,
-                DEFAULT_GATEWAY_QUEUE_NAME,
-                SCRIPT_GATEWAY,
-            )
-            .await?;
+            let mut removed = 0usize;
+            let mut scripts_to_check = vec![SCRIPT_GATEWAY.to_string()];
+            if SCRIPT_GATEWAY != "gateway" {
+                scripts_to_check.push("gateway".to_string());
+            }
+            for script_name in scripts_to_check {
+                removed += remove_queue_consumer_for_script(
+                    &client,
+                    account_id,
+                    api_token,
+                    &queue.queue_id,
+                    DEFAULT_GATEWAY_QUEUE_NAME,
+                    &script_name,
+                )
+                .await?;
+            }
             if removed > 0 {
                 println!(
                     "Removed {} queue consumer(s) for {} on {}",

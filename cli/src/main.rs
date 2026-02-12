@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use cliclack::{confirm, input, intro, log, multiselect, note, outro_cancel, select};
+use cliclack::{confirm, input, intro, log, multiselect, note, outro_cancel, password, select};
 use gsv::config::{self, CliConfig};
 use gsv::connection::Connection;
 use gsv::deploy;
@@ -914,7 +914,8 @@ fn prompt_line(
 }
 
 fn prompt_secret(prompt: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let value = rpassword::prompt_password(format!("{}: ", prompt))?;
+    let mut prompt = password(prompt).allow_empty();
+    let value = prompt.interact()?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Ok(None);
