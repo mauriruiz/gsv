@@ -1204,6 +1204,7 @@ export class Session extends DurableObject<Env> {
         model: effectiveModel,
         nodes: runtimeNodes,
         channelContext,
+        userTimezone: config.userTimezone,
       },
     });
   }

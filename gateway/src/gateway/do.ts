@@ -63,6 +63,7 @@ import {
   formatDirectiveAck,
 } from "./directives";
 import { processMediaWithTranscription } from "../transcription";
+import { formatEnvelope, formatTimeFull, resolveTimezone } from "../shared/time";
 import { processInboundMedia } from "../storage/media";
 import { getNativeToolDefinitions } from "../agents/tools";
 import { listHostsByRole, pickExecutionHostId } from "./capabilities";
@@ -973,9 +974,33 @@ export class Gateway extends DurableObject<Env> {
       };
     }
 
+    // Ensure lastActiveContext is set so gsv__Message can resolve defaults
+    // (for isolated cron sessions, no channel inbound has ever set this).
+    if (deliveryContext) {
+      this.lastActiveContext[agentId] = {
+        agentId,
+        channel: deliveryContext.channel,
+        accountId: deliveryContext.accountId,
+        peer: deliveryContext.peer,
+        sessionKey: params.sessionKey,
+        timestamp: Date.now(),
+      };
+    }
+
+    // Prepend current time context so the agent knows when the cron fired.
+    // When delivery is wired, append an instruction so the agent doesn't
+    // also use gsv__Message (which would cause duplicate delivery).
+    const config = this.getFullConfig();
+    const tz = resolveTimezone(config.userTimezone);
+    const timePrefix = `[cron · ${formatTimeFull(new Date(), tz)}]`;
+    const deliveryNote = deliveryContext
+      ? `\n[Your response will be delivered automatically to ${deliveryContext.channel}:${deliveryContext.peer.id} — reply normally, do NOT use gsv__Message for this.]`
+      : "";
+    const cronMessage = `${timePrefix} ${params.text}${deliveryNote}`;
+
     try {
       await session.chatSend(
-        params.text,
+        cronMessage,
         runId,
         JSON.parse(JSON.stringify(this.getAllTools())),
         JSON.parse(JSON.stringify(this.getRuntimeNodeInventory())),
@@ -1072,8 +1097,16 @@ export class Gateway extends DurableObject<Env> {
     const action = actionRaw.trim().toLowerCase();
 
     switch (action) {
-      case "status":
-        return await this.getCronStatus();
+      case "status": {
+        const status = await this.getCronStatus();
+        const config = this.getFullConfig();
+        const tz = resolveTimezone(config.userTimezone);
+        return {
+          ...status,
+          currentTime: formatTimeFull(new Date(), tz),
+          timezone: tz,
+        };
+      }
       case "list":
         return await this.listCronJobs({
           agentId: asString(args.agentId),
@@ -2711,6 +2744,17 @@ export class Gateway extends DurableObject<Env> {
         inboundMessageId: params.message.id,
       };
 
+      // Wrap the message in an envelope with channel + timestamp metadata
+      const tz = resolveTimezone(fullConfig.userTimezone);
+      const senderLabel = params.sender?.name ?? params.peer.name;
+      const envelopedMessage = formatEnvelope(directives.cleaned, {
+        channel: params.channel,
+        timestamp: new Date(),
+        timezone: tz,
+        peerKind: params.peer.kind,
+        sender: senderLabel,
+      });
+
       // Send typing indicator
       this.sendTypingToChannel(
         params.channel,
@@ -2721,7 +2765,7 @@ export class Gateway extends DurableObject<Env> {
       );
 
       const result = await sessionStub.chatSend(
-        directives.cleaned,
+        envelopedMessage,
         runId,
         JSON.parse(JSON.stringify(this.getAllTools())),
         JSON.parse(JSON.stringify(this.getRuntimeNodeInventory())),

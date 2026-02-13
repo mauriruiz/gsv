@@ -23,6 +23,7 @@ export type PromptRuntimeInfo = {
   };
   nodes?: RuntimeNodeInventory;
   channelContext?: SessionChannelContext;
+  userTimezone?: string;
 };
 
 export type BuildPromptOptions = {
@@ -330,13 +331,12 @@ function buildRuntimeSection(
     lines.push(`Model: ${runtime.model.provider}/${runtime.model.id}`);
   }
 
+  if (runtime.userTimezone) {
+    lines.push(`Timezone: ${runtime.userTimezone}`);
+  }
+
   if (runtime.channelContext) {
-    const ctx = runtime.channelContext;
-    const peerLabel = ctx.peer.name
-      ? `${ctx.peer.name} (${ctx.peer.id})`
-      : ctx.peer.id;
-    lines.push(`Channel: ${ctx.channel} (account: ${ctx.accountId})`);
-    lines.push(`Peer: ${peerLabel} (${ctx.peer.kind})`);
+    lines.push(`Channel: ${runtime.channelContext.channel}`);
   }
 
   if (runtime.nodes) {

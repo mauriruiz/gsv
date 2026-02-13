@@ -46,4 +46,5 @@ export const DEFAULT_CONFIG: GsvConfig = {
     maxRunsPerJobHistory: 200,
     maxConcurrentRuns: 4,
   },
+  userTimezone: "UTC",
 };

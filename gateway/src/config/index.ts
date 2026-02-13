@@ -187,6 +187,10 @@ export interface GsvConfig {
 
   // Cron job scheduler configuration
   cron: CronConfig;
+
+  // User timezone (IANA string, e.g. "America/Chicago"). Defaults to "UTC".
+  // Used in message envelopes, cron scheduling context, and system prompt.
+  userTimezone: string;
 }
 
 /** Deep-partial input type for user overrides */
@@ -213,6 +217,7 @@ export type GsvConfigInput = {
     defaultHeartbeat?: Partial<HeartbeatConfig>;
   };
   cron?: Partial<CronConfig>;
+  userTimezone?: string;
 };
 
 
