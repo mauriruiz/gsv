@@ -4,15 +4,15 @@ use gsv::config::{self, CliConfig};
 use gsv::connection::Connection;
 use gsv::deploy;
 use gsv::protocol::{
-    Frame, LogsGetPayload, LogsResultParams, NodeRuntimeInfo, ToolDefinition, ToolInvokePayload,
-    ToolResultParams,
+    Frame, LogsGetPayload, LogsResultParams, NodeProbePayload, NodeProbeResultParams,
+    NodeRuntimeInfo, ToolDefinition, ToolInvokePayload, ToolResultParams,
 };
 use gsv::tools::{all_tools_with_workspace, Tool};
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -102,6 +102,12 @@ enum Commands {
     Tools {
         #[command(subcommand)]
         action: ToolsAction,
+    },
+
+    /// Inspect and refresh skill runtime eligibility
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
     },
 
     /// Mount R2 bucket to local workspace using rclone
@@ -327,6 +333,31 @@ enum ToolsAction {
         /// Arguments as JSON object (e.g., '{"command": "ls -la"}')
         #[arg(default_value = "{}")]
         args: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsAction {
+    /// Show skill eligibility status for an agent
+    Status {
+        /// Agent ID (default: main)
+        #[arg(default_value = "main")]
+        agent_id: String,
+    },
+
+    /// Refresh node bin checks and show updated status
+    Update {
+        /// Agent ID (default: main)
+        #[arg(default_value = "main")]
+        agent_id: String,
+
+        /// Force re-probing even when cache is fresh
+        #[arg(long)]
+        force: bool,
+
+        /// Probe timeout in milliseconds
+        #[arg(long)]
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -684,6 +715,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Deploy { action } => run_deploy(action, &cfg).await,
         Commands::Session { action } => run_session(&url, token, action).await,
         Commands::Tools { action } => run_tools(&url, token, action).await,
+        Commands::Skills { action } => run_skills(&url, token, action).await,
         Commands::Mount { action } => run_mount(action, &cfg).await,
         Commands::Heartbeat { action } => run_heartbeat(&url, token, action).await,
         Commands::Pair { action } => run_pair(&url, token, action).await,
@@ -3573,6 +3605,149 @@ async fn run_tools(
     Ok(())
 }
 
+async fn run_skills(
+    url: &str,
+    token: Option<String>,
+    action: SkillsAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn =
+        Connection::connect_with_options(url, "client", None, None, |_| {}, None, token).await?;
+
+    let (method, params) = match action {
+        SkillsAction::Status { agent_id } => ("skills.status", json!({ "agentId": agent_id })),
+        SkillsAction::Update {
+            agent_id,
+            force,
+            timeout_ms,
+        } => (
+            "skills.update",
+            json!({
+                "agentId": agent_id,
+                "force": force,
+                "timeoutMs": timeout_ms,
+            }),
+        ),
+    };
+
+    let res = conn.request(method, Some(params)).await?;
+    if !res.ok {
+        if let Some(err) = res.error {
+            return Err(format!("Error: {}", err.message).into());
+        }
+        return Err("Unknown skills RPC error".into());
+    }
+
+    let payload = res.payload.unwrap_or_else(|| json!({}));
+    let agent_id = payload
+        .get("agentId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    println!("Agent: {}", agent_id);
+
+    let required_bins = payload
+        .get("requiredBins")
+        .and_then(|v| v.as_array())
+        .map(|bins| {
+            bins.iter()
+                .filter_map(|entry| entry.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    println!(
+        "Required bins: {}",
+        if required_bins.is_empty() {
+            "none".to_string()
+        } else {
+            required_bins.join(", ")
+        }
+    );
+
+    if method == "skills.update" {
+        let updated_nodes = payload
+            .get("updatedNodeCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!("Updated nodes: {}", updated_nodes);
+        if let Some(errors) = payload.get("errors").and_then(|v| v.as_array()) {
+            if !errors.is_empty() {
+                println!("Probe errors:");
+                for error in errors {
+                    if let Some(msg) = error.as_str() {
+                        println!("  - {}", msg);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(nodes) = payload.get("nodes").and_then(|v| v.as_array()) {
+        println!("\nNodes:");
+        if nodes.is_empty() {
+            println!("  (none connected)");
+        } else {
+            for node in nodes {
+                let node_id = node.get("nodeId").and_then(|v| v.as_str()).unwrap_or("?");
+                let role = node.get("hostRole").and_then(|v| v.as_str()).unwrap_or("?");
+                let os = node
+                    .get("hostOs")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let bins = node
+                    .get("hostBins")
+                    .and_then(|v| v.as_array())
+                    .map(|entries| entries.len())
+                    .unwrap_or(0);
+                let can_probe = node
+                    .get("canProbeBins")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                println!(
+                    "  - {} ({}) os={} bins={} probe={}",
+                    node_id,
+                    role,
+                    os,
+                    bins,
+                    if can_probe { "yes" } else { "no" }
+                );
+            }
+        }
+    }
+
+    if let Some(skills) = payload.get("skills").and_then(|v| v.as_array()) {
+        println!("\nSkills:");
+        if skills.is_empty() {
+            println!("  (none)");
+        } else {
+            for skill in skills {
+                let name = skill.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let eligible = skill
+                    .get("eligible")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let reasons = skill
+                    .get("reasons")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|entry| entry.as_str())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                if eligible {
+                    println!("  - {}: eligible", name);
+                } else if reasons.is_empty() {
+                    println!("  - {}: ineligible", name);
+                } else {
+                    println!("  - {}: ineligible ({})", name, reasons.join("; "));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_session(
     url: &str,
     token: Option<String>,
@@ -4058,6 +4233,64 @@ fn capabilities_for_tool(tool_name: &str) -> Result<Vec<&'static str>, String> {
     }
 }
 
+fn is_valid_probe_bin(bin: &str) -> bool {
+    !bin.is_empty()
+        && bin
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '+' | '-'))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return fs::metadata(path)
+            .map(|meta| (meta.permissions().mode() & 0o111) != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn is_bin_available(bin: &str) -> bool {
+    if bin.contains('/') || bin.contains('\\') {
+        return is_executable_file(Path::new(bin));
+    }
+
+    let path_var = std::env::var_os("PATH");
+    let Some(path_var) = path_var else {
+        return false;
+    };
+
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(bin);
+        if is_executable_file(&candidate) {
+            return true;
+        }
+    }
+    false
+}
+
+fn probe_node_bins(bins: &[String]) -> HashMap<String, bool> {
+    let mut statuses = HashMap::new();
+    for raw_bin in bins {
+        let bin = raw_bin.trim();
+        if !is_valid_probe_bin(bin) {
+            continue;
+        }
+        statuses.insert(bin.to_string(), is_bin_available(bin));
+    }
+    statuses
+}
+
 fn build_execution_node_runtime(
     tool_defs: &[ToolDefinition],
 ) -> Result<NodeRuntimeInfo, Box<dyn std::error::Error>> {
@@ -4097,10 +4330,21 @@ fn build_execution_node_runtime(
     let mut normalized_host_capabilities: Vec<String> = host_capabilities.into_iter().collect();
     normalized_host_capabilities.sort();
 
+    let mut host_env: Vec<String> = std::env::vars()
+        .map(|(key, _)| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect();
+    host_env.sort();
+    host_env.dedup();
+
     Ok(NodeRuntimeInfo {
         host_role: "execution".to_string(),
         host_capabilities: normalized_host_capabilities,
         tool_capabilities,
+        host_os: Some(std::env::consts::OS.to_string()),
+        host_env: Some(host_env),
+        host_bin_status: None,
+        host_bin_status_updated_at: None,
     })
 }
 
@@ -4340,6 +4584,67 @@ async fn run_node(
                                     "logs.result.send_failed",
                                     json!({
                                         "callId": response.call_id,
+                                        "error": e.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    } else if evt.event == "node.probe" {
+                        if let Some(payload) = evt.payload {
+                            let request = match serde_json::from_value::<NodeProbePayload>(payload)
+                            {
+                                Ok(request) => request,
+                                Err(e) => {
+                                    logger.warn(
+                                        "node.probe.parse_failed",
+                                        json!({
+                                            "error": e.to_string(),
+                                        }),
+                                    );
+                                    return;
+                                }
+                            };
+
+                            logger.info(
+                                "node.probe",
+                                json!({
+                                    "probeId": request.probe_id.clone(),
+                                    "kind": request.kind.clone(),
+                                    "binsCount": request.bins.len(),
+                                }),
+                            );
+
+                            let response = if request.kind == "bins" {
+                                let statuses = probe_node_bins(&request.bins);
+                                NodeProbeResultParams {
+                                    probe_id: request.probe_id.clone(),
+                                    ok: true,
+                                    bins: Some(statuses),
+                                    error: None,
+                                }
+                            } else {
+                                NodeProbeResultParams {
+                                    probe_id: request.probe_id.clone(),
+                                    ok: false,
+                                    bins: None,
+                                    error: Some(format!(
+                                        "Unsupported probe kind: {}",
+                                        request.kind
+                                    )),
+                                }
+                            };
+
+                            if let Err(e) = conn
+                                .request(
+                                    "node.probe.result",
+                                    Some(serde_json::to_value(&response).unwrap()),
+                                )
+                                .await
+                            {
+                                logger.error(
+                                    "node.probe.result.send_failed",
+                                    json!({
+                                        "probeId": response.probe_id,
                                         "error": e.to_string(),
                                     }),
                                 );

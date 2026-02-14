@@ -169,6 +169,7 @@ export type AbortResult = {
 
 // LRU cache for fetched media (in-memory, survives within request but not hibernation)
 const MEDIA_CACHE_MAX_SIZE = 50 * 1024 * 1024; // 50MB budget
+const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
 
 class MediaCache {
   private cache = new Map<
@@ -791,10 +792,11 @@ export class Session extends DurableObject<Env> {
       }
 
       // Some tools still pending (node tools) - set alarm and wait
-      this.ctx.storage.setAlarm(Date.now() + 60_000);
+      const toolTimeoutMs = await this.resolveToolTimeoutMs();
+      this.ctx.storage.setAlarm(Date.now() + toolTimeoutMs);
       // DO can now hibernate - will wake on toolResult() or alarm()
       console.log(
-        `[Session] Waiting for ${toolCalls.length} tool results, run ${this.currentRun?.runId}`,
+        `[Session] Waiting for ${toolCalls.length} tool results (timeout=${toolTimeoutMs}ms), run ${this.currentRun?.runId}`,
       );
       return;
     }
@@ -1007,6 +1009,23 @@ export class Session extends DurableObject<Env> {
     return true;
   }
 
+  private async resolveToolTimeoutMs(): Promise<number> {
+    try {
+      const gateway = this.env.GATEWAY.get(
+        this.env.GATEWAY.idFromName("singleton"),
+      );
+      const config: GsvConfig = await gateway.getConfig();
+      const value = config.timeouts?.toolMs;
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.max(1000, Math.floor(value));
+      }
+    } catch (error) {
+      console.warn(`[Session] Failed to resolve tool timeout from config:`, error);
+    }
+
+    return DEFAULT_TOOL_TIMEOUT_MS;
+  }
+
   private async callLlm(): Promise<AssistantMessage> {
     const gateway = this.env.GATEWAY.get(
       this.env.GATEWAY.idFromName("singleton"),
@@ -1189,14 +1208,14 @@ export class Session extends DurableObject<Env> {
     );
     const heartbeatPrompt =
       agentConfig?.heartbeat?.prompt || config.agents.defaultHeartbeat.prompt;
-    const runtimeNodes =
-      runRuntimeNodes ?? (await this.loadRuntimeNodeInventory());
+    const runtimeNodes = runRuntimeNodes ?? (await this.loadRuntimeNodeInventory());
 
     // Build combined prompt
     return buildSystemPromptFromWorkspace(basePrompt, workspace, {
       tools: runTools,
       heartbeatPrompt,
       skillEntries: config.skills.entries,
+      configRoot: config,
       runtime: {
         agentId,
         sessionKey: this.meta.sessionKey,

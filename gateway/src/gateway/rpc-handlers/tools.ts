@@ -98,6 +98,14 @@ export const handleToolResult: Handler<"tool.result"> = async ({
   if (!route) {
     throw new RpcError(404, "Unknown callId");
   }
+  if (
+    typeof route !== "object" ||
+    route === null ||
+    (route.kind !== "client" && route.kind !== "session")
+  ) {
+    delete gw.pendingToolCalls[params.callId];
+    return { ok: true, dropped: true };
+  }
 
   if (route.kind === "client") {
     const clientWs = gw.clients.get(route.clientId);
@@ -133,4 +141,17 @@ export const handleToolResult: Handler<"tool.result"> = async ({
   delete gw.pendingToolCalls[params.callId];
 
   return { ok: true };
+};
+
+export const handleNodeProbeResult: Handler<"node.probe.result"> = async ({
+  ws,
+  gw,
+  params,
+}) => {
+  const attachment = ws.deserializeAttachment();
+  const nodeId = attachment.nodeId as string | undefined;
+  if (!nodeId) {
+    throw new RpcError(403, "Only node clients can submit probe results");
+  }
+  return await gw.handleNodeProbeResult(nodeId, params);
 };
