@@ -20,8 +20,9 @@ async fn test_bash_tool_execution() {
         .await
         .unwrap();
 
+    assert_eq!(result["status"], "completed");
     assert_eq!(result["exitCode"], 0);
-    assert!(result["stdout"].as_str().unwrap().contains("hello"));
+    assert!(result["output"].as_str().unwrap().contains("hello"));
 }
 
 #[tokio::test]
@@ -41,10 +42,11 @@ async fn test_bash_tool_workdir() {
         .await
         .unwrap();
 
+    assert_eq!(result["status"], "completed");
     assert_eq!(result["exitCode"], 0);
     assert!(
-        result["stdout"].as_str().unwrap().contains("/tmp")
-            || result["stdout"].as_str().unwrap().contains("/private/tmp")
+        result["output"].as_str().unwrap().contains("/tmp")
+            || result["output"].as_str().unwrap().contains("/private/tmp")
     ); // macOS
 }
 
@@ -267,11 +269,12 @@ fn test_all_tools_with_workspace() {
     let workspace = std::env::temp_dir();
     let tools = all_tools_with_workspace(workspace);
 
-    // Should have 6 tools: Bash, Read, Write, Edit, Glob, Grep
-    assert_eq!(tools.len(), 6);
+    // Should have 7 tools: Bash, Process, Read, Write, Edit, Glob, Grep
+    assert_eq!(tools.len(), 7);
 
     let names: Vec<_> = tools.iter().map(|t| t.definition().name).collect();
     assert!(names.contains(&"Bash".to_string()));
+    assert!(names.contains(&"Process".to_string()));
     assert!(names.contains(&"Read".to_string()));
     assert!(names.contains(&"Write".to_string()));
     assert!(names.contains(&"Edit".to_string()));
