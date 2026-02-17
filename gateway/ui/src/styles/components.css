@@ -159,6 +159,34 @@
   margin-top: var(--space-1);
 }
 
+/* Kumo control spacing hardening */
+.ui-button-fix {
+  min-height: 2rem;
+  padding-inline: var(--space-3) !important;
+}
+
+.ui-badge-fix {
+  line-height: 1.25;
+  padding: var(--space-1) var(--space-2) !important;
+}
+
+.ui-input-fix {
+  min-height: 2.5rem;
+  border-radius: var(--radius-md) !important;
+  padding-inline: var(--space-3) !important;
+}
+
+textarea.ui-input-fix {
+  min-height: 6.5rem;
+  padding-block: var(--space-2) !important;
+}
+
+.ui-sensitive-fix {
+  min-height: 2.5rem;
+  border-radius: var(--radius-md) !important;
+  padding-inline: var(--space-3);
+}
+
 /* Pills / Badges */
 .pill {
   display: inline-flex;

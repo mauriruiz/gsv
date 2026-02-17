@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -9,13 +9,70 @@ import { getGatewayUrl, type UiSettings } from "../ui/storage";
 import { TAB_GROUPS, TAB_ICONS, TAB_LABELS, type Tab } from "../ui/types";
 import { useReactUiStore } from "./state/store";
 
+const ChatView = lazy(() =>
+  import("./views/ChatView").then((module) => ({ default: module.ChatView })),
+);
+const OverviewView = lazy(() =>
+  import("./views/OverviewView").then((module) => ({
+    default: module.OverviewView,
+  })),
+);
+const SessionsView = lazy(() =>
+  import("./views/SessionsView").then((module) => ({
+    default: module.SessionsView,
+  })),
+);
+const ChannelsView = lazy(() =>
+  import("./views/ChannelsView").then((module) => ({
+    default: module.ChannelsView,
+  })),
+);
+const NodesView = lazy(() =>
+  import("./views/NodesView").then((module) => ({ default: module.NodesView })),
+);
+const WorkspaceView = lazy(() =>
+  import("./views/WorkspaceView").then((module) => ({
+    default: module.WorkspaceView,
+  })),
+);
+const CronView = lazy(() =>
+  import("./views/CronView").then((module) => ({ default: module.CronView })),
+);
+const LogsView = lazy(() =>
+  import("./views/LogsView").then((module) => ({ default: module.LogsView })),
+);
+const PairingView = lazy(() =>
+  import("./views/PairingView").then((module) => ({
+    default: module.PairingView,
+  })),
+);
+const ConfigView = lazy(() =>
+  import("./views/ConfigView").then((module) => ({
+    default: module.ConfigView,
+  })),
+);
+const DebugView = lazy(() =>
+  import("./views/DebugView").then((module) => ({ default: module.DebugView })),
+);
+
 export function App() {
   const initialize = useReactUiStore((s) => s.initialize);
+  const cleanup = useReactUiStore((s) => s.cleanup);
   const syncTabFromLocation = useReactUiStore((s) => s.syncTabFromLocation);
+  const setMobileLayout = useReactUiStore((s) => s.setMobileLayout);
 
   useEffect(() => {
     initialize();
-  }, [initialize]);
+    const media = window.matchMedia("(max-width: 960px)");
+    const updateLayout = () => setMobileLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+
+    return () => {
+      media.removeEventListener("change", updateLayout);
+      cleanup();
+    };
+  }, [cleanup, initialize, setMobileLayout]);
 
   useEffect(() => {
     const onPopState = () => syncTabFromLocation();
@@ -57,12 +114,14 @@ function ConnectScreen() {
       <Surface className="connect-card">
         <div className="connect-header">
           <span className="connect-logo">⚡</span>
-          <h1>GSV React</h1>
-          <p className="text-secondary">Migration preview (`?ui=react`)</p>
+          <h1>GSV</h1>
+          <p className="text-secondary">Gateway control UI</p>
         </div>
         <div className="connect-form">
           <Input
             label="Gateway URL"
+            className="ui-input-fix"
+            size="lg"
             value={gatewayUrl}
             placeholder={getGatewayUrl(settings)}
             onChange={(event) => setGatewayUrl(event.target.value)}
@@ -70,6 +129,8 @@ function ConnectScreen() {
           />
           <SensitiveInput
             label="Auth Token"
+            className="ui-sensitive-fix"
+            size="lg"
             value={token}
             placeholder="Leave empty if no auth required"
             onValueChange={setToken}
@@ -107,7 +168,11 @@ function ConnectScreen() {
 
 function MainShell() {
   const tab = useReactUiStore((s) => s.tab);
-  const setTab = useReactUiStore((s) => s.setTab);
+  const switchTab = useReactUiStore((s) => s.switchTab);
+  const isMobileLayout = useReactUiStore((s) => s.isMobileLayout);
+  const navDrawerOpen = useReactUiStore((s) => s.navDrawerOpen);
+  const toggleNavDrawer = useReactUiStore((s) => s.toggleNavDrawer);
+  const closeNavDrawer = useReactUiStore((s) => s.closeNavDrawer);
   const connectionState = useReactUiStore((s) => s.connectionState);
   const updateSettings = useReactUiStore((s) => s.updateSettings);
   const settings = useReactUiStore((s) => s.settings);
@@ -124,11 +189,21 @@ function MainShell() {
   }, [connectionState]);
 
   return (
-    <div className="app-shell">
-      <nav className="nav-sidebar">
+    <div
+      className={`app-shell ${isMobileLayout ? "mobile" : ""} ${
+        navDrawerOpen ? "nav-open" : ""
+      }`}
+    >
+      <button
+        type="button"
+        className={`nav-backdrop ${navDrawerOpen ? "open" : ""}`}
+        onClick={() => closeNavDrawer()}
+        aria-label="Close navigation menu"
+      />
+      <nav className={`nav-sidebar ${navDrawerOpen ? "open" : ""}`}>
         <div className="nav-header">
           <span className="nav-logo">⚡</span>
-          <span className="nav-title">GSV React</span>
+          <span className="nav-title">GSV</span>
         </div>
 
         <div className="nav-groups">
@@ -140,7 +215,7 @@ function MainShell() {
                   type="button"
                   className={`nav-item ${groupTab === tab ? "active" : ""}`}
                   key={groupTab}
-                  onClick={() => setTab(groupTab)}
+                  onClick={() => switchTab(groupTab)}
                 >
                   <span className="nav-item-icon">{TAB_ICONS[groupTab]}</span>
                   <span className="nav-item-label">{TAB_LABELS[groupTab]}</span>
@@ -152,7 +227,9 @@ function MainShell() {
 
         <div className="nav-footer">
           <div className="connection-status">
-            <Badge variant={connectionBadgeVariant}>{connectionState}</Badge>
+            <Badge className="ui-badge-fix" variant={connectionBadgeVariant}>
+              {connectionState}
+            </Badge>
           </div>
         </div>
       </nav>
@@ -160,6 +237,17 @@ function MainShell() {
       <div className="main-content">
         <header className="topbar">
           <div className="topbar-title-wrap">
+            <Button
+              variant="ghost"
+              shape="square"
+              size="sm"
+              className="topbar-menu-btn"
+              aria-label="Toggle navigation menu"
+              title="Toggle navigation"
+              onClick={() => toggleNavDrawer()}
+            >
+              ☰
+            </Button>
             <h1 className="topbar-title">{TAB_LABELS[tab]}</h1>
           </div>
           <div className="topbar-actions">
@@ -178,46 +266,59 @@ function MainShell() {
             </Button>
             <Button
               variant="secondary"
-              size="sm"
+              className="ui-button-fix"
+              size="base"
               onClick={() => disconnect()}
             >
               Disconnect
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                const url = new URL(window.location.href);
-                url.searchParams.delete("ui");
-                window.location.href = url.toString();
-              }}
-            >
-              Use Lit UI
             </Button>
           </div>
         </header>
 
         <div className="page-content">
-          <ReactTabPlaceholder tab={tab} />
+          <ReactTabView tab={tab} />
         </div>
       </div>
     </div>
   );
 }
 
-function ReactTabPlaceholder({ tab }: { tab: Tab }) {
+function ReactTabView({ tab }: { tab: Tab }) {
+  return (
+    <Suspense fallback={<TabLoadingFallback />}>
+      {tab === "chat" ? <ChatView /> : null}
+      {tab === "overview" ? <OverviewView /> : null}
+      {tab === "sessions" ? <SessionsView /> : null}
+      {tab === "channels" ? <ChannelsView /> : null}
+      {tab === "nodes" ? <NodesView /> : null}
+      {tab === "workspace" ? <WorkspaceView /> : null}
+      {tab === "cron" ? <CronView /> : null}
+      {tab === "logs" ? <LogsView /> : null}
+      {tab === "pairing" ? <PairingView /> : null}
+      {tab === "config" ? <ConfigView /> : null}
+      {tab === "debug" ? <DebugView /> : null}
+      {!TAB_LABELS[tab] ? (
+        <div className="view-container">
+          <Surface className="card">
+            <div className="card-body">
+              <p className="text-secondary">Unknown tab: {tab}</p>
+            </div>
+          </Surface>
+        </div>
+      ) : null}
+    </Suspense>
+  );
+}
+
+function TabLoadingFallback() {
   return (
     <div className="view-container">
       <Surface className="card">
-        <div className="card-header">
-          <h3 className="card-title">{TAB_LABELS[tab]}</h3>
-          <Badge variant="secondary">React migration</Badge>
-        </div>
         <div className="card-body">
-          <p className="text-secondary">
-            This tab is not migrated yet. Phase 1 starts with full Config migration
-            using Kumo controls, then tab-by-tab parity.
-          </p>
+          <div className="thinking-indicator">
+            <span className="spinner"></span>
+            <span>Loading view...</span>
+          </div>
         </div>
       </Surface>
     </div>

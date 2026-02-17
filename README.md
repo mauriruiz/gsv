@@ -210,6 +210,10 @@ cd cli && cargo build --release
 # Build local Cloudflare bundles and deploy via CLI
 ./scripts/build-cloudflare-bundles.sh
 gsv deploy up --bundle-dir ./release/local --version local-dev --all --force-fetch
+
+# Local-bundle deploy shortcut (defaults to `-c gateway`)
+./scripts/deploy-local.sh
+./scripts/deploy-local.sh -c gateway --force-fetch
 ```
 
 ## License
