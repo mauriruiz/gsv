@@ -2175,7 +2175,7 @@ describe("Channel RPC Latency", () => {
     );
     
     const latency = Date.now() - startTime;
-    console.log(`   Queue round-trip latency: ${latency}ms`);
+    console.log(`   Channel round-trip latency: ${latency}ms`);
     
     // Queue latency should be reasonable (under 5 seconds for a command)
     expect(latency).toBeLessThan(5000);

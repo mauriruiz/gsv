@@ -99,6 +99,13 @@ export async function createGsvInfra(opts: GsvInfraOptions) {
     console.log("   UI assets ready");
   }
 
+  // Reserve the gateway worker name so channel -> gateway service bindings can
+  // resolve before the full gateway script is uploaded.
+  await WorkerStub(`${name}-gateway-stub`, {
+    name,
+    url: false,
+  });
+
   // =========================================================================
   // Deploy channels FIRST (Gateway references them via service bindings)
   // =========================================================================
