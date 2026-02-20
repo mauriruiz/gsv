@@ -72,7 +72,7 @@ This enables the model to "see" image files read from nodes — instead of getti
 
 Tool dispatch has a critical fork: is this tool handled inside the Gateway, or does it need to reach a node?
 
-**Native tools** (prefixed with `gsv__`) execute within the Gateway Worker itself. These include workspace file operations — `gsv__ReadFile`, `gsv__WriteFile`, `gsv__ListFiles`, `gsv__DeleteFile`. They operate on R2 storage, so they're always available even with no nodes connected. The agent can always read and write its own workspace files. Native tools complete synchronously within the Session DO's execution context.
+**Native tools** (prefixed with `gsv__`) execute within the Gateway Worker itself. These include workspace file operations — `gsv__ReadFile`, `gsv__WriteFile`, `gsv__EditFile`, `gsv__DeleteFile`. They operate on R2 storage, so they're always available even with no nodes connected. The agent can always read and write its own workspace files. Native tools complete synchronously within the Session DO's execution context.
 
 **Node tools** are namespaced as `{nodeId}__{toolName}` — like `macbook__Bash` or `server__Read`. The Session asks the Gateway to dispatch these, and the Gateway looks up the node in its registry, finds the WebSocket connection, and sends a `tool.invoke` event. The node executes the tool (running a shell command, reading a file, etc.) and sends the result back as a `tool.result` frame, which the Gateway routes back to the originating Session.
 

@@ -16,39 +16,25 @@ All native tools return a result object with the shape:
 
 Workspace tools operate on the agent's R2 workspace at `agents/{agentId}/`. Paths are relative to the workspace root unless otherwise noted. Path traversal (`..`) is rejected. Virtual `skills/` paths resolve agent-local overrides first, then fall back to global skills.
 
-### gsv__ListFiles
-
-List files and directories in the agent's workspace.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | `string` | No | Directory path relative to workspace root. `"/"` or omitted for root. `"memory/"` for memory directory. `"skills/"` for skill files. |
-
-**Output:** `{ path, files: string[], directories: string[] }`
-
-**Side effects:** None. Read-only.
-
-**Behavior:** Lists objects and common prefixes in R2 under the resolved path. For `skills/` paths, results are merged from agent-level (`agents/{agentId}/skills/`) and global (`skills/`) locations, with agent files taking precedence for deduplication.
-
----
-
 ### gsv__ReadFile
 
-Read a file from the agent's workspace.
+Read a file or list a directory in the agent's workspace.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | `string` | Yes | File path relative to workspace root. Examples: `"SOUL.md"`, `"memory/2024-01-15.md"`, `"skills/summarize/SKILL.md"`. |
+| `path` | `string` | No | Path relative to workspace root. Omit or use `"/"` to list the root. Examples: `"SOUL.md"`, `"memory/"`, `"skills/summarize/SKILL.md"`. |
 
-**Output:** `{ path, content: string, size: number, lastModified?: string }`
+**File output:** `{ path, content: string, size: number, lastModified?: string }`
 
 For `skills/*` paths, the output additionally includes:
 - `resolvedPath`: The actual R2 key that was read.
 - `resolvedSource`: `"agent"` or `"global"`, indicating which copy was found.
 
+**Directory output:** `{ path, files: string[], directories: string[] }`
+
 **Side effects:** None. Read-only.
 
-**Behavior:** For `skills/*` paths, checks agent-local override at `agents/{agentId}/skills/*` first, then falls back to the global `skills/*` path. Returns an error if the file is not found.
+**Behavior:** If path is omitted, lists the workspace root. If path points to a file, returns its content. If path points to a directory (or a file is not found at that path but objects exist under it as a prefix), returns a directory listing. For `skills/` paths, results are merged from agent-level and global locations, with agent files taking precedence for deduplication.
 
 ---
 
