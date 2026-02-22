@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { PersistedObject } from "../shared/persisted-object";
+import { PersistedObject, snapshot } from "../shared/persisted-object";
 import type { ChatEventPayload } from "../protocol/chat";
 import type { RuntimeNodeInventory, ToolDefinition } from "../protocol/tools";
 import type {
@@ -832,11 +832,7 @@ export class Session extends DurableObject<Env> {
       this.addMessage(userMessage);
       this.meta.updatedAt = Date.now();
     }
-    // Kick off the agent loop asynchronously
-    // ctx.waitUntil() keeps the DO alive but doesn't block the RPC response
-    this.ctx.waitUntil(
-      this.runAgentLoop({ shouldResetBeforeRun, userMessage }),
-    );
+    this.runAgentLoop({ shouldResetBeforeRun, userMessage });
   }
 
   /**
@@ -1007,9 +1003,11 @@ export class Session extends DurableObject<Env> {
     let response: AssistantMessage;
 
     const runForLlm = this.currentRun;
-    const originalMessageOverrides = runForLlm?.messageOverrides;
+    const originalMessageOverrides = runForLlm?.messageOverrides
+      ? snapshot(runForLlm.messageOverrides as any)
+      : undefined;
     if (continuationOverrides && runForLlm) {
-      runForLlm.messageOverrides = continuationOverrides;
+      runForLlm.messageOverrides = snapshot(continuationOverrides as any);
     }
 
     try {
