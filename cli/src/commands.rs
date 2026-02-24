@@ -13,6 +13,19 @@ use crate::{
     SkillsAction, ToolsAction, WhatsAppAction,
 };
 
+fn truncate_for_display(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    format!("{}...", &text[..end])
+}
+
 pub(crate) async fn run_client(
     url: &str,
     token: Option<String>,
@@ -1138,7 +1151,7 @@ pub(crate) async fn run_session(
                                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                         // Truncate long results
                                         if text.len() > 200 {
-                                            println!("{}...", &text[..200]);
+                                            println!("{}", truncate_for_display(text, 200));
                                         } else {
                                             println!("{}", text);
                                         }
@@ -1235,4 +1248,24 @@ fn render_qr_terminal(data: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", image);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_for_display;
+
+    #[test]
+    fn truncate_for_display_keeps_short_text_unchanged() {
+        let text = "hello";
+        assert_eq!(truncate_for_display(text, 200), "hello");
+    }
+
+    #[test]
+    fn truncate_for_display_respects_utf8_boundaries() {
+        let text = "a".repeat(199) + "─tail";
+        let truncated = truncate_for_display(&text, 200);
+
+        assert!(truncated.ends_with("..."));
+        assert_eq!(truncated, format!("{}...", "a".repeat(199)));
+    }
 }
